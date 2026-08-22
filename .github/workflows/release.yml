@@ -74,6 +74,7 @@ jobs:
       - working-directory: dist
         run: shasum -a 256 herdr-workspacer-* > SHA256SUMS
       - env:
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: >-
           gh release create "${GITHUB_REF_NAME}"
