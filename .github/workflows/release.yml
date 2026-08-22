@@ -51,7 +51,7 @@ jobs:
       - if: ${{ !matrix.cross }}
         run: cargo build --release --locked --target ${{ matrix.target }}
       - run: cp "target/${{ matrix.target }}/release/herdr-workspacer" "${{ matrix.asset }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}
           path: ${{ matrix.asset }}
