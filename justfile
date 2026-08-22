@@ -1,4 +1,5 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
+set positional-arguments
 
 default:
     @just --list
@@ -39,3 +40,6 @@ machete:
 check: format-check clippy cargo-check build deny machete
 
 verify: check test
+
+release version *args:
+    python3 scripts/release.py "$@"

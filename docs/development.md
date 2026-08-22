@@ -17,8 +17,9 @@
 | `herdr-plugin.toml` | Plugin actions, popup pane, focus event, and install build step |
 | `scripts/fetch-or-build.sh` | Verified release download with a Cargo source-build fallback |
 | `scripts/check-version.py` | Cargo, plugin manifest, and release-tag version agreement |
+| `scripts/release.py` | Release metadata, verification, commit, tag, and optional push |
 | `.github/workflows/ci.yml` | Pull request and `main` verification gate |
-| `.github/workflows/release.yml` | Tagged multi-platform builds and GitHub release publishing |
+| `.github/workflows/release.yml` | Tagged multi-platform, GitHub, and crates.io publishing |
 
 ## Runtime behavior
 
@@ -109,27 +110,60 @@ same lint, test, license, advisory, source, and unused-dependency checks as sour
 
 ## Release
 
-A tag named `v<version>` starts `.github/workflows/release.yml`. The workflow first checks that the
-tag, `Cargo.toml`, and `herdr-plugin.toml` agree. It then builds four assets:
+A tag named `v<version>` starts `.github/workflows/release.yml`. The workflow checks that the tag,
+`Cargo.toml`, and `herdr-plugin.toml` agree, then builds four assets:
 
 - Linux x86-64
 - Linux ARM64
 - macOS x86-64
 - macOS ARM64
 
-Linux assets use `cross`; macOS assets use Cargo on the matching runner. The publish job creates
-`SHA256SUMS` from the downloaded build artifacts and attaches all assets to a GitHub release.
+Linux assets use `cross`; macOS assets use Cargo on the matching runner. The GitHub publish job
+creates `SHA256SUMS` and attaches all assets to a release. The final job publishes the same version
+to crates.io unless that version already exists.
 
-To prepare a release from a clean `main`:
+Prepare a release from a clean `main`:
 
-1. Replace `## [Unreleased]` in `CHANGELOG.md` with `## [<version>] - YYYY-MM-DD` and add a new
-   empty `Unreleased` section above it.
-2. Set the same version in `Cargo.toml` and `herdr-plugin.toml`.
-3. Run `cargo check` once to update the root package entry in `Cargo.lock`.
-4. Run `python3 scripts/check-version.py` and `just verify`.
-5. Commit with `chore: release <version>` and create the tag `v<version>` on that commit.
-6. Push the commit, then push the tag.
+```sh
+just release <version>
+```
 
-The tag makes the release public. Review the asset names and checksums after the workflow completes.
-The install script uses the version in `Cargo.toml` to select that release and refuses a binary whose
+The command requires a three-part version and refuses dirty worktrees, other branches, existing
+tags, decreasing versions, and empty `Unreleased` changelog sections. It then:
+
+1. Sets the version in `Cargo.toml` and `herdr-plugin.toml`.
+2. Adds a dated changelog section while retaining an empty `Unreleased` section.
+3. Updates `Cargo.lock` and runs `just verify`. It restores the release files if verification fails.
+4. Commits `chore: release <version>` and creates `v<version>`.
+
+Pushing stays separate because it makes the release public:
+
+```sh
+git push origin main
+git push origin v<version>
+```
+
+Pass `--push` to perform both pushes after the commit and tag are created:
+
+```sh
+just release <version> --push
+```
+
+Before the first release, publish the crate manually because crates.io cannot configure trusted
+publishing for a package that does not exist:
+
+```sh
+just release 0.1.0
+git push origin main
+cargo login
+cargo publish --locked
+git push origin v0.1.0
+```
+
+After the first publish, add a crates.io trusted publisher for owner `mcuste`, repository
+`herdr-workspacer`, workflow `release.yml`, and environment `crates-io`. Later tag workflows use a
+short-lived OIDC credential and need no stored crates.io token.
+
+Review the GitHub assets, checksums, and crates.io version after the workflow completes. The install
+script uses the version in `Cargo.toml` to select the GitHub release and refuses a binary whose
 checksum does not match.

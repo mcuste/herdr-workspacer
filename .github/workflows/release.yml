@@ -4,13 +4,14 @@ on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   validate:
     name: Validate release metadata
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - run: python3 scripts/check-version.py "${GITHUB_REF_NAME}"
@@ -39,6 +40,8 @@ jobs:
             asset: herdr-workspacer-macos-aarch64
             cross: false
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -61,6 +64,8 @@ jobs:
     name: Publish GitHub release
     needs: build
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -76,3 +81,31 @@ jobs:
           --generate-notes
           dist/herdr-workspacer-*
           dist/SHA256SUMS
+
+  publish-crate:
+    name: Publish crates.io package
+    needs: publish
+    runs-on: ubuntu-24.04
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check whether this version is already published
+        id: published
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if cargo info "herdr-workspacer@${version}" >/dev/null 2>&1; then
+            echo "exists=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "exists=false" >> "${GITHUB_OUTPUT}"
+          fi
+      - if: steps.published.outputs.exists == 'false'
+        id: crates-auth
+        uses: rust-lang/crates-io-auth-action@v1
+      - if: steps.published.outputs.exists == 'false'
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
