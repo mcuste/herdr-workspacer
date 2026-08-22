@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Fixed
+
+- GitHub release publishing now identifies the repository without a checkout.
+
 ## [0.1.0] - 2026-08-22
 
 ### Added
