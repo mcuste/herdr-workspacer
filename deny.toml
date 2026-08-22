@@ -1,0 +1,48 @@
+[graph]
+all-features = true
+exclude-dev = true
+
+[advisories]
+yanked = "deny"
+unmaintained = "all"
+unsound = "all"
+maximum-db-staleness = "P3D"
+unused-ignored-advisory = "deny"
+
+[licenses]
+confidence-threshold = 0.93
+private = { ignore = true }
+unused-allowed-license = "deny"
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "0BSD",
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+deny = [
+    { crate = "openssl", use-instead = "rustls" },
+    { crate = "openssl-sys", use-instead = "rustls" },
+    { crate = "cmake", use-instead = "cc" },
+]
+
+[bans.build]
+executables = "deny"
+interpreted = "deny"
+enable-builtin-globs = true
+include-dependencies = true
+include-workspace = false
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+required-git-spec = "rev"
+unused-allowed-source = "deny"

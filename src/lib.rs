@@ -1,1 +1,1 @@
-#![forbid(unsafe_code)]
+//! Rust components for the Herdr Workspacer plugin.
