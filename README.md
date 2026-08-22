@@ -14,16 +14,14 @@ Repository setup is complete. The picker implementation has not started.
 
 ## Development
 
-Requires the Rust stable toolchain, cargo-deny 0.20.2, and cargo-machete 0.9.2.
+Requires the Rust stable toolchain, just 1.58.0, cargo-deny 0.20.2, and cargo-machete 0.9.2.
 
 ```sh
+cargo install just --version 1.58.0 --locked
 cargo install cargo-deny --version 0.20.2 --locked
 cargo install cargo-machete --version 0.9.2 --locked
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-cargo deny check
-cargo machete
+just --list
+just verify
 ```
 
 ## License
