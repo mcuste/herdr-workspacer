@@ -1,29 +1,36 @@
 # Herdr Workspacer
 
-MRU fuzzy workspace picker for Herdr, using open workspaces and optional zoxide directories.
+[![CI](https://github.com/mcuste/herdr-workspacer/actions/workflows/ci.yml/badge.svg)](https://github.com/mcuste/herdr-workspacer/actions/workflows/ci.yml)
 
-## Features
+An MRU fuzzy workspace picker for Herdr. It combines open workspaces with optional
+[zoxide](https://github.com/ajeetdsouza/zoxide) directories in one popup, then focuses the selected
+workspace or creates one at the selected directory.
 
-- Opens as a centered Herdr popup.
-- Lists open workspaces and zoxide directories.
-- Keeps open workspaces when zoxide is unavailable.
-- Suppresses zoxide entries that duplicate open workspace paths.
-- Stores recency by canonical directory path.
-- Uses fuzzy matching to filter without changing MRU order.
-- Focuses an existing workspace or creates one for the selected directory.
+## Why
+
+Open workspaces and frequently used directories answer different parts of the same question:
+where should the next terminal session run? Herdr Workspacer presents both sources in one list and
+uses the last workspace selected or focused to keep active projects near the top.
+
+Filtering never changes that order. A query only removes non-matching rows, so the same project
+does not jump around while its name is typed.
 
 ## Requirements
 
-- Herdr 0.8.0 or later on macOS or Linux.
-- zoxide is optional. It supplies additional directory candidates.
+- Herdr 0.8.0 or later on macOS or Linux
+- zoxide, optionally, for directories that are not already open as Herdr workspaces
 
-The plugin does not require `fzf`, `jq`, Rust, or Cargo when a release binary is available.
+The installed plugin does not need `fzf`, `jq`, Rust, or Cargo when a release binary is available.
 
 ## Install
 
 ```sh
 herdr plugin install mcuste/herdr-workspacer
 ```
+
+The installer downloads the release binary for the current operating system and architecture and
+checks it against the release's `SHA256SUMS`. If no release binary is available, it builds from
+source with Cargo. Installation fails rather than running a download that cannot be verified.
 
 Choose any Herdr keybinding. For example, add this to `~/.config/herdr/config.toml`:
 
@@ -47,6 +54,20 @@ Herdr lists active bindings with `prefix+?`. The action also works without a key
 herdr plugin action invoke herdr-workspacer.open
 ```
 
+## How candidates are ordered
+
+The picker builds one list:
+
+1. Previously focused or selected paths in most-recently-used order.
+2. Remaining open workspaces in Herdr's order.
+3. Remaining zoxide directories by descending zoxide score.
+
+Paths are canonicalized before comparison. A zoxide entry that resolves to an open workspace
+therefore appears only once. Missing zoxide directories and malformed zoxide records are skipped.
+
+Selecting an open workspace focuses it. Selecting another directory first checks a fresh Herdr
+snapshot, then focuses a workspace that has since opened there or creates a new focused workspace.
+
 ## Controls
 
 | Key | Action |
@@ -62,9 +83,16 @@ herdr plugin action invoke herdr-workspacer.open
 
 MRU order remains unchanged while a query filters the visible results.
 
-## zoxide fallback
+## Failure behavior
 
-If zoxide is not installed or its query fails, the picker still lists open Herdr workspaces and displays a warning. Stale and malformed zoxide entries are skipped.
+The picker remains useful when optional data is unavailable:
+
+- If zoxide is missing or its query fails, open Herdr workspaces remain available and the popup
+  shows a warning.
+- Open workspaces without a usable directory are skipped and counted in the warning.
+- A missing or malformed MRU file starts with empty history. The malformed file is moved aside for
+  inspection.
+- A failed Herdr operation is shown in the popup and returned as a process error.
 
 ## Uninstall
 
@@ -74,7 +102,7 @@ herdr plugin uninstall herdr-workspacer
 
 ## Development
 
-Requires Rust stable, Cargo, Herdr 0.8.0 or later, and zoxide for full-source testing.
+Requires Rust 1.85 or later, Cargo, Herdr 0.8.0 or later, and zoxide for full manual testing.
 
 ```sh
 cargo build
@@ -84,12 +112,19 @@ herdr plugin link .
 herdr plugin action invoke herdr-workspacer.open
 ```
 
-Run the project checks with:
+Run the same verification gate as CI:
 
 ```sh
 just verify
 ```
 
+## Documentation
+
+- [Contributing and commit conventions](CONTRIBUTING.md)
+- [Development and release](docs/development.md)
+- [Safety model](docs/safety.md)
+- [Changelog](CHANGELOG.md)
+
 ## License
 
-MIT. See [LICENSE](LICENSE).
+[MIT](LICENSE)
