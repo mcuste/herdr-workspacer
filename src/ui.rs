@@ -8,7 +8,12 @@ use anyhow::{Context, Result, bail};
 use crate::app::PickerModel;
 use herdr_workspacer::Candidate;
 
-const VISIBLE_ROWS: usize = 10;
+const DEFAULT_VISIBLE_ROWS: usize = 10;
+const LAYOUT_ROWS: usize = 6;
+const CONTENT_INDENT: &str = "  ";
+const WORKSPACE_COLOR: &str = "\x1b[36m";
+const ZOXIDE_COLOR: &str = "\x1b[35m";
+const RESET_FOREGROUND: &str = "\x1b[39m";
 
 pub(crate) enum PickerOutcome {
     Cancelled,
@@ -42,11 +47,16 @@ pub(crate) fn show_error(message: &str) -> Result<()> {
 struct TerminalSession {
     stdout: io::Stdout,
     stty_state: String,
+    visible_rows: usize,
     active: bool,
 }
 
 impl TerminalSession {
     fn enter() -> Result<Self> {
+        let visible_rows = terminal_rows()
+            .unwrap_or(DEFAULT_VISIBLE_ROWS)
+            .saturating_sub(LAYOUT_ROWS)
+            .max(1);
         let stty_state = stty_output(["-g"])?;
         let stty_state = String::from_utf8_lossy(&stty_state.stdout)
             .trim()
@@ -66,6 +76,7 @@ impl TerminalSession {
         Ok(Self {
             stdout,
             stty_state,
+            visible_rows,
             active: true,
         })
     }
@@ -73,9 +84,10 @@ impl TerminalSession {
     fn run(&mut self, model: &mut PickerModel) -> Result<PickerOutcome> {
         let stdin = io::stdin();
         let mut input = stdin.lock();
+        let page_size = isize::try_from(self.visible_rows).unwrap_or(isize::MAX);
 
         loop {
-            render_picker(&mut self.stdout, model)?;
+            render_picker(&mut self.stdout, model, self.visible_rows)?;
             match read_key(&mut input)? {
                 Key::Cancel => return Ok(PickerOutcome::Cancelled),
                 Key::Select => {
@@ -85,8 +97,8 @@ impl TerminalSession {
                 }
                 Key::Up => model.move_selection(-1),
                 Key::Down => model.move_selection(1),
-                Key::PageUp => model.move_selection(-10),
-                Key::PageDown => model.move_selection(10),
+                Key::PageUp => model.move_selection(-page_size),
+                Key::PageDown => model.move_selection(page_size),
                 Key::Backspace => model.backspace(),
                 Key::Clear => model.clear_query(),
                 Key::Character(character) => model.push_query_character(character),
@@ -129,25 +141,30 @@ impl Drop for TerminalSession {
     }
 }
 
-fn render_picker(stdout: &mut io::Stdout, model: &PickerModel) -> Result<()> {
+fn render_picker(stdout: &mut io::Stdout, model: &PickerModel, visible_rows: usize) -> Result<()> {
     write!(
         stdout,
-        "\x1b[2J\x1b[H\x1b[1mWorkspace\x1b[0m\nSearch: {}\n\n",
+        "\x1b[2J\x1b[H{CONTENT_INDENT}\x1b[1mFind workspace\x1b[0m\r\n\
+         {CONTENT_INDENT}\x1b[2mType to filter\x1b[0m  {}\r\n\r\n",
         model.query()
     )?;
 
     let visible = model.visible();
     let start = model
         .selected()
-        .saturating_sub(VISIBLE_ROWS >> 1)
-        .min(visible.len().saturating_sub(VISIBLE_ROWS));
-    let end = start.saturating_add(VISIBLE_ROWS).min(visible.len());
+        .saturating_sub(visible_rows >> 1)
+        .min(visible.len().saturating_sub(visible_rows));
+    let end = start.saturating_add(visible_rows).min(visible.len());
 
     if visible.is_empty() {
-        writeln!(stdout, "No matching workspaces.")?;
+        write!(
+            stdout,
+            "{CONTENT_INDENT}\x1b[2mNo matching workspaces\x1b[0m\r\n"
+        )?;
     } else if let Some(rows) = visible.get(start..end) {
         for (offset, index) in rows.iter().enumerate() {
             if let Some(candidate) = model.candidate(*index) {
+                write!(stdout, "{CONTENT_INDENT}")?;
                 if model.selected() == start.saturating_add(offset) {
                     write!(stdout, "\x1b[7m")?;
                 }
@@ -155,18 +172,18 @@ fn render_picker(stdout: &mut io::Stdout, model: &PickerModel) -> Result<()> {
                 if model.selected() == start.saturating_add(offset) {
                     write!(stdout, "\x1b[0m")?;
                 }
-                writeln!(stdout)?;
+                write!(stdout, "\r\n")?;
             }
         }
     }
 
-    writeln!(stdout)?;
-    writeln!(
+    write!(stdout, "\r\n")?;
+    if let Some(warning) = model.warning() {
+        write!(stdout, "{CONTENT_INDENT}\x1b[33m{warning}\x1b[0m\r\n")?;
+    }
+    write!(
         stdout,
-        "{}",
-        model
-            .warning()
-            .unwrap_or("Enter select  Esc cancel  Up/Down move")
+        "{CONTENT_INDENT}\x1b[2mEnter select  Esc cancel  ↑/↓ move  PgUp/PgDn jump\x1b[0m\r\n"
     )?;
     stdout.flush()?;
     Ok(())
@@ -175,7 +192,7 @@ fn render_picker(stdout: &mut io::Stdout, model: &PickerModel) -> Result<()> {
 fn render_error(stdout: &mut io::Stdout, message: &str) -> Result<()> {
     write!(
         stdout,
-        "\x1b[2J\x1b[H\x1b[1mWorkspace error\x1b[0m\n\n{}\n\nEnter or Esc closes this popup.",
+        "\x1b[2J\x1b[H\x1b[1mWorkspace error\x1b[0m\r\n\r\n{}\r\n\r\nEnter or Esc closes this popup.",
         safe_terminal_text(message)
     )?;
     stdout.flush()?;
@@ -183,11 +200,15 @@ fn render_error(stdout: &mut io::Stdout, message: &str) -> Result<()> {
 }
 
 fn write_candidate(stdout: &mut io::Stdout, candidate: &Candidate) -> io::Result<()> {
-    let marker = if candidate.is_workspace() { "●" } else { " " };
+    let (color, marker, source) = if candidate.is_workspace() {
+        (WORKSPACE_COLOR, "●", "workspace")
+    } else {
+        (ZOXIDE_COLOR, " ", "zoxide")
+    };
     write!(
         stdout,
-        "{} {}  {}",
-        marker, candidate.label, candidate.display_path
+        "{color}{marker} [{source}]{RESET_FOREGROUND} {}  {}",
+        candidate.label, candidate.display_path
     )
 }
 
@@ -206,6 +227,12 @@ fn stty_output<const N: usize>(arguments: [&str; N]) -> Result<std::process::Out
 
 fn run_stty<const N: usize>(arguments: [&str; N]) -> Result<()> {
     stty_output(arguments).map(|_| ())
+}
+
+fn terminal_rows() -> Option<usize> {
+    let output = stty_output(["size"]).ok()?;
+    let size = String::from_utf8_lossy(&output.stdout);
+    size.split_whitespace().next()?.parse().ok()
 }
 
 #[derive(Debug, Eq, PartialEq)]

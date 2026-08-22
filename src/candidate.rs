@@ -54,7 +54,7 @@ pub struct Workspace {
 impl Candidate {
     fn workspace(workspace: Workspace, canonical_path: PathBuf) -> Self {
         let display_path = display_path(&workspace.path);
-        let search_text = search_text(&workspace.label, &workspace.path);
+        let search_text = search_text(&workspace.label, &display_path);
         let label = safe_terminal_text(&workspace.label);
 
         Self {
@@ -81,7 +81,7 @@ impl Candidate {
                 || display_path.clone(),
                 |name| name.to_string_lossy().into_owned(),
             );
-        let search_text = search_text(&raw_label, &entry.path);
+        let search_text = search_text(&raw_label, &display_path);
         let label = safe_terminal_text(&raw_label);
 
         Self {
@@ -118,7 +118,7 @@ pub fn merge_candidates(
     }
 
     for (source_order, entry) in zoxide_entries.into_iter().enumerate() {
-        if !entry.path.is_dir() {
+        if entry.path.file_name().is_some_and(|name| name == ".git") || !entry.path.is_dir() {
             continue;
         }
 
@@ -152,36 +152,39 @@ fn sort_candidates(candidates: &mut [Candidate], mru: &MruState) {
         .collect();
 
     candidates.sort_by(|left, right| {
-        let left_rank = ranks.get(left.canonical_path.as_path());
-        let right_rank = ranks.get(right.canonical_path.as_path());
+        right
+            .is_workspace()
+            .cmp(&left.is_workspace())
+            .then_with(|| {
+                let left_rank = ranks.get(left.canonical_path.as_path());
+                let right_rank = ranks.get(right.canonical_path.as_path());
 
-        match (left_rank, right_rank) {
-            (Some(left_rank), Some(right_rank)) => left_rank
-                .cmp(right_rank)
-                .then_with(|| fallback_order(left, right)),
-            (Some(_), None) => Ordering::Less,
-            (None, Some(_)) => Ordering::Greater,
-            (None, None) => fallback_order(left, right),
-        }
+                match (left_rank, right_rank) {
+                    (Some(left_rank), Some(right_rank)) => left_rank
+                        .cmp(right_rank)
+                        .then_with(|| fallback_order(left, right)),
+                    (Some(_), None) => Ordering::Less,
+                    (None, Some(_)) => Ordering::Greater,
+                    (None, None) => fallback_order(left, right),
+                }
+            })
     });
 }
 
 fn fallback_order(left: &Candidate, right: &Candidate) -> Ordering {
-    left.is_workspace()
-        .cmp(&right.is_workspace())
-        .reverse()
-        .then_with(|| match (&left.kind, &right.kind) {
-            (CandidateKind::Workspace { .. }, CandidateKind::Workspace { .. }) => {
-                left.source_order.cmp(&right.source_order)
-            }
-            (CandidateKind::Directory, CandidateKind::Directory) => right
-                .zoxide_score
-                .unwrap_or_default()
-                .total_cmp(&left.zoxide_score.unwrap_or_default()),
-            _ => Ordering::Equal,
-        })
-        .then_with(|| left.label.cmp(&right.label))
-        .then_with(|| left.canonical_path.cmp(&right.canonical_path))
+    match (&left.kind, &right.kind) {
+        (CandidateKind::Workspace { .. }, CandidateKind::Workspace { .. }) => {
+            left.source_order.cmp(&right.source_order)
+        }
+        (CandidateKind::Directory, CandidateKind::Directory) => right
+            .zoxide_score
+            .unwrap_or_default()
+            .total_cmp(&left.zoxide_score.unwrap_or_default()),
+        (CandidateKind::Directory, CandidateKind::Workspace { .. }) => Ordering::Less,
+        (CandidateKind::Workspace { .. }, CandidateKind::Directory) => Ordering::Greater,
+    }
+    .then_with(|| left.label.cmp(&right.label))
+    .then_with(|| left.canonical_path.cmp(&right.canonical_path))
 }
 
 fn display_path(path: &Path) -> String {
@@ -202,11 +205,8 @@ fn display_path(path: &Path) -> String {
     safe_terminal_text(&display)
 }
 
-fn search_text(label: &str, path: &Path) -> String {
-    let basename = path
-        .file_name()
-        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
-    format!("{label} {} {basename}", path.display())
+fn search_text(label: &str, display_path: &str) -> String {
+    format!("{label} {display_path}")
 }
 
 fn safe_terminal_text(value: &str) -> String {
@@ -330,6 +330,39 @@ mod tests {
     }
 
     #[test]
+    fn skips_git_metadata_directories() -> Result<()> {
+        let root = TemporaryDirectory::new()?;
+        let git = root.path.join(".git");
+        let project = root.path.join("project");
+        std::fs::create_dir(&git)?;
+        std::fs::create_dir(&project)?;
+
+        let candidates = merge_candidates(
+            Vec::new(),
+            vec![
+                entry(&git.display().to_string(), 10.0),
+                entry(&project.display().to_string(), 1.0),
+            ],
+            &MruState::default(),
+        )?;
+
+        anyhow::ensure!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.label.as_str())
+                .collect::<Vec<_>>()
+                == vec!["project"],
+            "git metadata directory was included"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn searches_the_displayed_path() {
+        assert_eq!(search_text("dotfiles", "~/dotfiles"), "dotfiles ~/dotfiles");
+    }
+
+    #[test]
     fn keeps_multiple_workspaces_at_the_same_path() {
         let path = std::env::temp_dir().display().to_string();
         let workspaces = vec![workspace("first", &path, 0), workspace("second", &path, 1)];
@@ -350,26 +383,59 @@ mod tests {
     }
 
     #[test]
-    fn ranks_mru_paths_before_native_workspace_order() {
-        let workspaces = vec![
-            workspace("first", "/workspaces/first", 0),
-            workspace("second", "/workspaces/second", 1),
-        ];
+    fn ranks_mru_paths_before_zoxide_score() -> Result<()> {
+        let root = TemporaryDirectory::new()?;
+        let first = root.path.join("first");
+        let second = root.path.join("second");
+        std::fs::create_dir(&first)?;
+        std::fs::create_dir(&second)?;
+        let first_text = first.display().to_string();
+        let second_text = second.display().to_string();
         let mru = MruState {
-            paths: vec![PathBuf::from("/workspaces/second")],
+            paths: vec![normalize_path(&second)?],
         };
-        let candidates = merge_candidates(workspaces, Vec::new(), &mru);
 
-        assert!(candidates.is_ok());
-        if let Ok(candidates) = candidates {
-            assert_eq!(
-                candidates
-                    .iter()
-                    .map(|candidate| candidate.label.as_str())
-                    .collect::<Vec<_>>(),
-                vec!["second", "first"]
-            );
-        }
+        let candidates = merge_candidates(
+            vec![
+                workspace("first", &first_text, 0),
+                workspace("second", &second_text, 1),
+            ],
+            vec![entry(&first_text, 1.0), entry(&second_text, 2.0)],
+            &mru,
+        )?;
+
+        let labels = candidates
+            .iter()
+            .map(|candidate| candidate.label.as_str())
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            labels == vec!["second", "first"],
+            "MRU order was not preserved"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ranks_open_workspaces_before_zoxide_paths() -> Result<()> {
+        let root = TemporaryDirectory::new()?;
+        let directory = root.path.join("zoxide");
+        std::fs::create_dir(&directory)?;
+
+        let candidates = merge_candidates(
+            vec![workspace("workspace", "/workspaces/open", 0)],
+            vec![entry(&directory.display().to_string(), 10.0)],
+            &MruState::default(),
+        )?;
+
+        let labels = candidates
+            .iter()
+            .map(|candidate| candidate.label.as_str())
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            labels == vec!["workspace", "zoxide"],
+            "open workspace did not appear before zoxide"
+        );
+        Ok(())
     }
 
     #[test]

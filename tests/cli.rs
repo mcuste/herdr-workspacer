@@ -2,7 +2,9 @@
 #![cfg(unix)]
 
 use std::{
-    env, fs,
+    env,
+    fmt::Write as _,
+    fs,
     io::Write,
     os::unix::fs::{PermissionsExt, symlink},
     path::{Path, PathBuf},
@@ -46,8 +48,12 @@ esac
 const STTY_SCRIPT: &str = r#"#!/bin/sh
 base=${0%/*}
 state="$base/terminal-state"
+printf '%s\n' "$*" >> "$base/stty.log"
 
 case "$1" in
+size)
+    printf '%s\n' '24 80'
+    ;;
 -g)
     printf '%s\n' saved-state
     ;;
@@ -204,6 +210,23 @@ impl Fixture {
         Ok(directory)
     }
 
+    fn install_zoxide_directories(&self, count: usize) -> Result<()> {
+        let mut script = String::from(
+            "#!/bin/sh\nbase=${0%/*}\nprintf '%s\\n' \"$*\" >> \"$base/zoxide.log\"\n\n\
+             case \"$1:$2\" in\nquery:-ls)\n",
+        );
+        for index in 0..count {
+            fs::create_dir(self.file(&format!("zoxide-{index}")))?;
+            writeln!(
+                &mut script,
+                "    printf '{}\\t%s/zoxide-{index}\\n' \"$base\"",
+                count.saturating_sub(index)
+            )?;
+        }
+        script.push_str("    ;;\n*)\n    exit 17\n    ;;\nesac\n");
+        write_executable(&self.bin_dir(), "zoxide", &script)
+    }
+
     fn log(&self, name: &str) -> Result<String> {
         Ok(fs::read_to_string(self.file(name))?)
     }
@@ -292,6 +315,44 @@ fn ensure_terminal_restored(fixture: &Fixture) -> Result<()> {
         fixture.terminal_state()? == "saved-state\n",
         "terminal state was not restored"
     );
+    anyhow::ensure!(
+        fixture.log("stty.log")? == "size\n-g\nraw -echo min 0 time 1\nsaved-state\n",
+        "picker did not use the terminal size or restore its state"
+    );
+    Ok(())
+}
+
+fn ensure_terminal_line_endings(output: &Output) -> Result<()> {
+    let mut previous = None;
+    let mut saw_line_ending = false;
+    for byte in &output.stdout {
+        if *byte == b'\n' {
+            anyhow::ensure!(
+                previous == Some(b'\r'),
+                "picker emitted a line feed without a carriage return"
+            );
+            saw_line_ending = true;
+        }
+        previous = Some(*byte);
+    }
+    anyhow::ensure!(saw_line_ending, "picker did not render a line ending");
+    Ok(())
+}
+
+fn ensure_picker_layout(output: &Output) -> Result<()> {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    anyhow::ensure!(
+        stdout.contains(
+            "\x1b[2J\x1b[H  \x1b[1mFind workspace\x1b[0m\r\n  \
+             \x1b[2mType to filter\x1b[0m  \r\n\r\n"
+        ),
+        "picker did not render its heading and search prompt"
+    );
+    anyhow::ensure!(
+        stdout
+            .contains("\r\n  \x1b[2mEnter select  Esc cancel  ↑/↓ move  PgUp/PgDn jump\x1b[0m\r\n"),
+        "picker did not render its controls"
+    );
     Ok(())
 }
 
@@ -356,6 +417,8 @@ fn picker_keeps_open_workspaces_available_when_zoxide_fails() -> Result<()> {
     let output = run_picker(&fixture, b"\n")?;
 
     ensure_success(&output)?;
+    ensure_terminal_line_endings(&output)?;
+    ensure_picker_layout(&output)?;
     anyhow::ensure!(
         String::from_utf8_lossy(&output.stdout)
             .contains("zoxide query failed. Showing open workspaces only."),
@@ -373,6 +436,53 @@ fn picker_keeps_open_workspaces_available_when_zoxide_fails() -> Result<()> {
     anyhow::ensure!(
         fixture.mru_paths()? == expected_paths,
         "picker did not persist the selected workspace"
+    );
+    ensure_terminal_restored(&fixture)
+}
+
+#[test]
+fn picker_marks_matching_zoxide_paths_as_active_workspaces() -> Result<()> {
+    let _guard = serial_guard();
+    let fixture = Fixture::new()?;
+    let directory = fixture.install_zoxide_directory()?;
+    fixture.write_snapshot(&workspace_snapshot("workspace", &directory))?;
+
+    let output = run_picker(&fixture, b"\n")?;
+
+    ensure_success(&output)?;
+    anyhow::ensure!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("\x1b[7m\x1b[36m● [workspace]\x1b[39m project"),
+        "picker did not mark the active zoxide path"
+    );
+    anyhow::ensure!(
+        fixture.log("herdr.log")? == "api snapshot\nworkspace focus workspace\n",
+        "picker did not focus the active zoxide workspace"
+    );
+    let expected_paths = json!([path_to_string(&fs::canonicalize(&directory)?)]);
+    anyhow::ensure!(
+        fixture.mru_paths()? == expected_paths,
+        "picker did not persist the active zoxide path"
+    );
+    ensure_terminal_restored(&fixture)
+}
+
+#[test]
+fn picker_uses_the_available_terminal_height() -> Result<()> {
+    let _guard = serial_guard();
+    let fixture = Fixture::new()?;
+    fixture.write_snapshot(&empty_snapshot())?;
+    fixture.install_zoxide_directories(20)?;
+
+    let output = run_picker(&fixture, b"\x1b")?;
+
+    ensure_success(&output)?;
+    anyhow::ensure!(
+        String::from_utf8_lossy(&output.stdout)
+            .matches("[zoxide]")
+            .count()
+            == 18,
+        "picker did not fill the available candidate rows"
     );
     ensure_terminal_restored(&fixture)
 }
@@ -398,6 +508,11 @@ fn picker_creates_a_workspace_for_a_zoxide_directory() -> Result<()> {
     anyhow::ensure!(
         fixture.log("zoxide.log")? == "query -ls\n",
         "picker sent an unexpected zoxide command"
+    );
+    anyhow::ensure!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("\x1b[7m\x1b[35m  [zoxide]\x1b[39m zoxide-directory"),
+        "picker did not render the selected zoxide badge"
     );
     let expected_paths = json!([path_to_string(&fs::canonicalize(&directory)?)]);
     anyhow::ensure!(
@@ -439,6 +554,7 @@ fn picker_displays_herdr_failures_and_restores_the_terminal() -> Result<()> {
     let output = run_picker(&fixture, b"\x1b")?;
 
     anyhow::ensure!(!output.status.success(), "picker unexpectedly succeeded");
+    ensure_terminal_line_endings(&output)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     anyhow::ensure!(
         stdout.contains("Workspace error") && stdout.contains("snapshot unavailable"),

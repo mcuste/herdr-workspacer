@@ -20,6 +20,9 @@ does not jump around while its name is typed.
 - Herdr 0.8.0 or later on macOS or Linux
 - zoxide, optionally, for directories that are not already open as Herdr workspaces
 
+The plugin searches `PATH` and common macOS and Linux install locations. Set
+`HERDR_WORKSPACER_ZOXIDE_PATH` to the executable for a custom installation.
+
 The installed plugin does not need `fzf`, `jq`, Rust, or Cargo when a release binary is available.
 
 ## Install
@@ -58,15 +61,16 @@ herdr plugin action invoke herdr-workspacer.open
 
 The picker builds one list:
 
-1. Previously focused or selected paths in most-recently-used order.
-2. Remaining open workspaces in Herdr's order.
-3. Remaining zoxide directories by descending zoxide score.
+1. Open workspaces.
+2. Remaining zoxide directories.
 
-Paths are canonicalized before comparison. A zoxide entry that resolves to an open workspace
-therefore appears only once. Missing zoxide directories and malformed zoxide records are skipped.
+Paths are canonicalized before comparison. A zoxide entry that resolves to an open workspace appears
+once as an active `[workspace]` row. Git metadata directories, missing zoxide directories, and
+malformed records are skipped. Within each group, MRU paths come first. Remaining workspaces use
+Herdr's order and remaining zoxide directories use descending zoxide score.
 
-Selecting an open workspace focuses it. Selecting another directory first checks a fresh Herdr
-snapshot, then focuses a workspace that has since opened there or creates a new focused workspace.
+Selecting another directory first checks a fresh Herdr snapshot, then focuses a workspace that has
+since opened there or creates a new focused workspace.
 
 ## Controls
 
@@ -76,19 +80,20 @@ snapshot, then focuses a workspace that has since opened there or creates a new 
 | Backspace | Remove one query character |
 | Up or `ctrl+p` | Move to the previous result |
 | Down or `ctrl+n` | Move to the next result |
-| PageUp or PageDown | Move ten results |
+| PageUp or PageDown | Move one visible page |
 | `ctrl+u` | Clear the query |
 | Enter | Focus or create the selected workspace |
 | Esc or `ctrl+c` | Close the picker |
 
-MRU order remains unchanged while a query filters the visible results.
+An empty query uses the grouped source order. A query ranks every matching candidate by fuzzy
+relevance and uses source order to break score ties.
 
 ## Failure behavior
 
 The picker remains useful when optional data is unavailable:
 
-- If zoxide is missing or its query fails, open Herdr workspaces remain available and the popup
-  shows a warning.
+- If zoxide is missing or its query fails, open workspaces remain available and the popup shows a
+  warning.
 - Open workspaces without a usable directory are skipped and counted in the warning.
 - A missing or malformed MRU file starts with empty history. The malformed file is moved aside for
   inspection.

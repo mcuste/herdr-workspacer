@@ -9,6 +9,7 @@ boundary and keeps optional-source failures from removing valid Herdr workspaces
 | Input | Treatment |
 | --- | --- |
 | Herdr executable path | Read only from `HERDR_BIN_PATH`, which the Herdr plugin runtime supplies |
+| zoxide executable | Read from `HERDR_WORKSPACER_ZOXIDE_PATH` when set, then from PATH and standard install locations |
 | Herdr snapshot | Parsed as JSON into the fields needed to resolve workspace directories |
 | Focus event | Parsed as JSON and reduced to a workspace ID present in a fresh snapshot |
 | zoxide output | Parsed one record at a time; invalid scores, empty paths, and missing directories are skipped |
@@ -17,9 +18,9 @@ boundary and keeps optional-source failures from removing valid Herdr workspaces
 | Selected paths | Passed to Herdr as one process argument, never interpolated into a command string |
 
 The plugin trusts Herdr to set its runtime environment correctly. Anyone who can replace the binary
-named by `HERDR_BIN_PATH`, change the `zoxide` executable found on `PATH`, or write the plugin state
-directory already controls the plugin process. The plugin does not try to create a sandbox inside
-that boundary.
+named by `HERDR_BIN_PATH`, change a zoxide executable selected from the configured or standard lookup
+locations, or write the plugin state directory already controls the plugin process. The plugin does
+not try to create a sandbox inside that boundary.
 
 ## External commands
 

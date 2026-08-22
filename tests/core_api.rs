@@ -1,41 +1,56 @@
 //! Public-core integration tests.
 
-use std::path::PathBuf;
-
-use herdr_workspacer::{MruState, Workspace, filter_indices, merge_candidates};
+use herdr_workspacer::{
+    MruState, Workspace, ZoxideEntry, filter_indices, merge_candidates, normalize_path,
+};
 
 #[test]
-fn mru_order_survives_fuzzy_filtering() {
+fn fuzzy_relevance_overrides_mru_order() -> anyhow::Result<()> {
+    let first = std::env::temp_dir();
+    let Some(second) = first.parent().map(std::path::Path::to_path_buf) else {
+        anyhow::bail!("temporary directory has no parent");
+    };
     let candidates = merge_candidates(
         vec![
             Workspace {
                 id: "first".to_string(),
                 label: "herdr".to_string(),
-                path: PathBuf::from("/workspaces/herdr"),
+                path: first.clone(),
                 native_order: 0,
             },
             Workspace {
                 id: "second".to_string(),
                 label: "old-herdr".to_string(),
-                path: PathBuf::from("/workspaces/old-herdr"),
+                path: second.clone(),
                 native_order: 1,
             },
         ],
-        Vec::new(),
+        vec![
+            ZoxideEntry {
+                path: first,
+                score: 1.0,
+            },
+            ZoxideEntry {
+                path: second.clone(),
+                score: 1.0,
+            },
+        ],
         &MruState {
-            paths: vec![PathBuf::from("/workspaces/old-herdr")],
+            paths: vec![normalize_path(&second)?],
         },
-    );
+    )?;
 
-    assert!(candidates.is_ok());
-    if let Ok(candidates) = candidates {
-        assert_eq!(
-            candidates
-                .iter()
-                .map(|candidate| candidate.label.as_str())
-                .collect::<Vec<_>>(),
-            vec!["old-herdr", "herdr"]
-        );
-        assert_eq!(filter_indices(&candidates, "hdr"), vec![0, 1]);
-    }
+    let labels = candidates
+        .iter()
+        .map(|candidate| candidate.label.as_str())
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        labels == vec!["old-herdr", "herdr"],
+        "MRU order was not preserved"
+    );
+    anyhow::ensure!(
+        filter_indices(&candidates, "hdr") == vec![1, 0],
+        "fuzzy filtering did not rank the stronger match first"
+    );
+    Ok(())
 }

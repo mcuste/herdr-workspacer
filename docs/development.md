@@ -30,9 +30,10 @@ The plugin has three process entry points:
 3. `record-focus` handles Herdr's `workspace.focused` event and records that workspace's canonical
    directory in MRU state.
 
-Candidate order has one invariant: filtering removes rows but never reorders them. Stored MRU paths
-come first. Open workspaces that have no stored rank retain Herdr's order. Remaining zoxide entries
-use descending zoxide score. Canonical paths deduplicate the two sources.
+Candidate source order has one invariant: open workspaces come first, then remaining zoxide entries.
+Within each group, stored MRU paths come first. Remaining workspaces use Herdr's order and remaining
+zoxide entries use descending score. A non-empty query ranks every matching candidate by fuzzy
+relevance and uses source order to break score ties. Canonical paths deduplicate the two sources.
 
 A directory selection reads a second Herdr snapshot before creating anything. If another process
 opened the directory after the picker loaded, the plugin focuses that workspace instead of creating

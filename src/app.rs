@@ -88,29 +88,38 @@ impl PickerModel {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use herdr_workspacer::{MruState, Workspace, merge_candidates};
 
     use super::*;
+    use herdr_workspacer::{MruState, Workspace, ZoxideEntry, merge_candidates};
 
     fn candidates() -> Option<Vec<Candidate>> {
+        let first = std::env::temp_dir();
+        let second = first.parent()?.to_path_buf();
         merge_candidates(
             vec![
                 Workspace {
                     id: "alpha".to_string(),
                     label: "alpha".to_string(),
-                    path: PathBuf::from("/code/alpha"),
+                    path: first.clone(),
                     native_order: 0,
                 },
                 Workspace {
                     id: "beta".to_string(),
                     label: "beta".to_string(),
-                    path: PathBuf::from("/code/beta"),
+                    path: second.clone(),
                     native_order: 1,
                 },
             ],
-            Vec::new(),
+            vec![
+                ZoxideEntry {
+                    path: first,
+                    score: 1.0,
+                },
+                ZoxideEntry {
+                    path: second,
+                    score: 1.0,
+                },
+            ],
             &MruState::default(),
         )
         .ok()

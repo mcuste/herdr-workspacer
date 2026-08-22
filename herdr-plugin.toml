@@ -18,8 +18,8 @@ command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-workspacer\" open"]
 id = "picker"
 title = "Workspace"
 placement = "popup"
-width = "70%"
-height = "60%"
+width = "55%"
+height = "45%"
 command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-workspacer\" picker"]
 
 [[events]]
