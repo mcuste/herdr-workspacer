@@ -224,9 +224,41 @@ fn safe_terminal_text(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+    use std::{
+        sync::atomic::{AtomicUsize, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use super::*;
+
+    static NEXT_TEMPORARY_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
+
+    struct TemporaryDirectory {
+        path: std::path::PathBuf,
+    }
+
+    impl TemporaryDirectory {
+        fn new() -> Result<Self> {
+            let sequence = NEXT_TEMPORARY_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "herdr-workspacer-candidate-{}-{}-{sequence}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |duration| duration.as_nanos())
+            ));
+            std::fs::create_dir_all(&path)?;
+            Ok(Self { path })
+        }
+    }
+
+    impl Drop for TemporaryDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
 
     fn workspace(id: &str, path: &str, native_order: usize) -> Workspace {
         Workspace {
@@ -257,6 +289,44 @@ mod tests {
             assert_eq!(candidates.len(), 1);
             assert!(candidates.first().is_some_and(Candidate::is_workspace));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_paths_deduplicate_workspace_and_zoxide_entries() -> Result<()> {
+        let root = TemporaryDirectory::new()?;
+        let directory = root.path.join("project");
+        let alias = root.path.join("project-alias");
+        std::fs::create_dir(&directory)?;
+        symlink(&directory, &alias)?;
+
+        let candidates = merge_candidates(
+            vec![workspace("workspace", &alias.display().to_string(), 0)],
+            vec![entry(&directory.display().to_string(), 10.0)],
+            &MruState::default(),
+        )?;
+
+        anyhow::ensure!(candidates.len() == 1, "expected one candidate");
+        anyhow::ensure!(
+            candidates.first().is_some_and(Candidate::is_workspace),
+            "expected the workspace candidate"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn skips_missing_zoxide_directories() -> Result<()> {
+        let root = TemporaryDirectory::new()?;
+        let missing = root.path.join("missing");
+
+        let candidates = merge_candidates(
+            Vec::new(),
+            vec![entry(&missing.display().to_string(), 10.0)],
+            &MruState::default(),
+        )?;
+
+        anyhow::ensure!(candidates.is_empty(), "expected no candidates");
+        Ok(())
     }
 
     #[test]

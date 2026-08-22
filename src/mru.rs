@@ -1,6 +1,7 @@
 use std::{
     fs::{self, OpenOptions},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -11,6 +12,8 @@ use serde::{Deserialize, Serialize};
 const MRU_LIMIT: usize = 200;
 const STATE_FILE: &str = "mru.json";
 const LOCK_FILE: &str = "mru.lock";
+
+static UNIQUE_SUFFIX_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Ordered paths with the most recently focused path first.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -58,18 +61,18 @@ impl From<&MruState> for MruFile {
 }
 
 impl MruStore {
+    /// Opens the MRU store in `state_dir`.
+    pub fn new(state_dir: PathBuf) -> Self {
+        Self { state_dir }
+    }
+
     /// Opens the MRU store designated by Herdr's runtime environment.
     pub fn from_environment() -> Result<Self> {
         let state_dir = std::env::var_os("HERDR_PLUGIN_STATE_DIR")
             .map(PathBuf::from)
             .context("Herdr did not provide HERDR_PLUGIN_STATE_DIR")?;
 
-        Ok(Self { state_dir })
-    }
-
-    #[cfg(test)]
-    fn new(state_dir: PathBuf) -> Self {
-        Self { state_dir }
+        Ok(Self::new(state_dir))
     }
 
     /// Loads MRU state, treating a missing or malformed file as empty.
@@ -208,7 +211,8 @@ fn unique_suffix() -> String {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos());
-    format!("{}-{timestamp}", std::process::id())
+    let sequence = UNIQUE_SUFFIX_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{timestamp}-{sequence}", std::process::id())
 }
 
 #[cfg(test)]

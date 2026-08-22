@@ -68,10 +68,14 @@ struct FocusEvent {
 }
 
 impl HerdrClient {
+    pub(crate) fn new(binary: OsString) -> Self {
+        Self { binary }
+    }
+
     pub(crate) fn from_environment() -> Result<Self> {
         let binary =
             std::env::var_os("HERDR_BIN_PATH").context("Herdr did not provide HERDR_BIN_PATH")?;
-        Ok(Self { binary })
+        Ok(Self::new(binary))
     }
 
     pub(crate) fn snapshot(&self) -> Result<Snapshot> {

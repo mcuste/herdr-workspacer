@@ -208,6 +208,7 @@ fn run_stty<const N: usize>(arguments: [&str; N]) -> Result<()> {
     stty_output(arguments).map(|_| ())
 }
 
+#[derive(Debug, Eq, PartialEq)]
 enum Key {
     Cancel,
     Select,
@@ -305,4 +306,54 @@ fn safe_terminal_text(value: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use super::*;
+
+    #[test]
+    fn parses_documented_controls() -> anyhow::Result<()> {
+        let cases = [
+            (&b"a"[..], Key::Character('a')),
+            (&b"\x7f"[..], Key::Backspace),
+            (&b"\x08"[..], Key::Backspace),
+            (&b"\x1b[A"[..], Key::Up),
+            (&b"\x10"[..], Key::Up),
+            (&b"\x1b[B"[..], Key::Down),
+            (&b"\x0e"[..], Key::Down),
+            (&b"\x1b[5~"[..], Key::PageUp),
+            (&b"\x1b[6~"[..], Key::PageDown),
+            (&b"\x15"[..], Key::Clear),
+            (&b"\r"[..], Key::Select),
+            (&b"\n"[..], Key::Select),
+            (&b"\x1b"[..], Key::Cancel),
+            (&b"\x03"[..], Key::Cancel),
+        ];
+
+        for (input, expected) in cases {
+            let actual = read_key(&mut Cursor::new(input))?;
+            anyhow::ensure!(actual == expected, "expected {expected:?}, got {actual:?}");
+        }
+        let actual = read_key(&mut Cursor::new("プロ".as_bytes()))?;
+        anyhow::ensure!(
+            actual == Key::Character('プ'),
+            "expected a Unicode character, got {actual:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ignores_malformed_or_unknown_input() -> anyhow::Result<()> {
+        for input in [&b"\x1b[Z"[..], &b"\xe3\x28\x28"[..], &b"\xff"[..]] {
+            let actual = read_key(&mut Cursor::new(input))?;
+            anyhow::ensure!(
+                actual == Key::Ignore,
+                "expected ignored input, got {actual:?}"
+            );
+        }
+        Ok(())
+    }
 }
