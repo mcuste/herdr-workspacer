@@ -1,0 +1,27 @@
+id = "herdr-workspacer"
+name = "Herdr Workspacer"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+description = "MRU fuzzy workspace picker for Herdr and zoxide directories."
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["/bin/sh", "scripts/fetch-or-build.sh"]
+
+[[actions]]
+id = "open"
+title = "Open workspace picker"
+contexts = ["global", "workspace"]
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-workspacer\" open"]
+
+[[panes]]
+id = "picker"
+title = "Workspace"
+placement = "popup"
+width = "70%"
+height = "60%"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-workspacer\" picker"]
+
+[[events]]
+on = "workspace.focused"
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-workspacer\" record-focus"]
