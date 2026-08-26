@@ -41,5 +41,10 @@ check: format-check clippy cargo-check build deny machete
 
 verify: check test
 
+demo:
+    vhs docs/demo/herdr-workspacer-demo.tape
+    herdr session stop workspacer-demo >/dev/null 2>&1 || true
+    herdr session delete workspacer-demo >/dev/null 2>&1 || true
+
 release version *args:
     python3 scripts/release.py "$@"

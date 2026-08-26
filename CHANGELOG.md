@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Changed
+
+- Refreshed the README demo with clearer picker framing, reliable action invocation, user configuration, and isolated gcloud state.
+
 ## [0.1.1] - 2026-08-22
 
 ### Fixed

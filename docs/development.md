@@ -15,6 +15,7 @@
 | `src/lib.rs` | Library exports used by the binary and integration tests |
 | `tests/` | Tests of the public library boundary |
 | `herdr-plugin.toml` | Plugin actions, popup pane, focus event, and install build step |
+| `docs/demo/` | VHS tape and start script for the recorded README demo |
 | `scripts/fetch-or-build.sh` | Verified release download with a Cargo source-build fallback |
 | `scripts/check-version.py` | Cargo, plugin manifest, and release-tag version agreement |
 | `scripts/release.py` | Release metadata, verification, commit, tag, and optional push |
@@ -59,6 +60,7 @@ moved to a uniquely named backup and treated as empty state.
 | `just machete` | Find unused dependencies |
 | `just check` | Run every static, build, and dependency check |
 | `just verify` | Run `just check` and the full test suite |
+| `just demo` | Record the README demo with VHS |
 
 CI installs the pinned command versions listed in `CONTRIBUTING.md` and runs `just verify`. Run the
 same command locally so CI does not apply a second convention.
@@ -98,6 +100,25 @@ workspace while the popup is open. Restart Herdr and confirm that recorded paths
 
 The plugin manifest invokes `bin/herdr-workspacer`. Recopy the debug binary after rebuilding, or
 relink the plugin if the Herdr development workflow replaces the plugin directory.
+
+## Demo recording
+
+`README.md` shows a recorded picker session. Record it with
+[VHS](https://github.com/charmbracelet/vhs):
+
+```sh
+herdr plugin link .
+just demo
+```
+
+The tape starts `docs/demo/start-herdr-workspacer-demo.sh`, which builds the working tree into
+`bin/`, writes demo directories and a demo zoxide database under a temporary `HOME`, and opens a
+separate Herdr session named `workspacer-demo`. The recording shows those demo paths instead of a
+developer's own directories. Link the plugin first, or the recording uses the installed release.
+
+MRU state stays in the running Herdr installation, so the demo directories remain in local MRU
+state. `HERDR_WORKSPACER_DEMO_HOME` and `HERDR_WORKSPACER_DEMO_SESSION` change the temporary home
+and the session name.
 
 ## Continuous integration
 

@@ -6,6 +6,8 @@ An MRU fuzzy workspace picker for Herdr. It combines open workspaces with option
 [zoxide](https://github.com/ajeetdsouza/zoxide) directories in one popup, then focuses the selected
 workspace or creates one at the selected directory.
 
+![Workspace picker demo](docs/demo/herdr-workspacer-demo.gif)
+
 ## Why
 
 Open workspaces and frequently used directories answer different parts of the same question:
