@@ -100,12 +100,14 @@ mod tests {
                 Workspace {
                     id: "alpha".to_string(),
                     label: "alpha".to_string(),
+                    is_worktree: false,
                     path: first.clone(),
                     native_order: 0,
                 },
                 Workspace {
                     id: "beta".to_string(),
                     label: "beta".to_string(),
+                    is_worktree: false,
                     path: second.clone(),
                     native_order: 1,
                 },

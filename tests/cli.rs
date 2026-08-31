@@ -259,7 +259,7 @@ fn serial_guard() -> MutexGuard<'static, ()> {
     }
 }
 
-fn workspace_snapshot(workspace_id: &str, path: &Path) -> Value {
+fn worktree_snapshot(workspace_id: &str, path: &Path) -> Value {
     json!({
         "result": {
             "snapshot": {
@@ -267,7 +267,29 @@ fn workspace_snapshot(workspace_id: &str, path: &Path) -> Value {
                     "workspace_id": workspace_id,
                     "label": "project",
                     "active_tab_id": "tab",
-                    "worktree": { "checkout_path": path_to_string(path) }
+                    "worktree": {
+                        "checkout_path": path_to_string(path),
+                        "is_linked_worktree": true
+                    }
+                }],
+                "panes": []
+            }
+        }
+    })
+}
+
+fn workspace_snapshot(workspace_id: &str, label: &str, path: &Path) -> Value {
+    json!({
+        "result": {
+            "snapshot": {
+                "workspaces": [{
+                    "workspace_id": workspace_id,
+                    "label": label,
+                    "active_tab_id": "tab",
+                    "worktree": {
+                        "checkout_path": path_to_string(path),
+                        "is_linked_worktree": false
+                    }
                 }],
                 "panes": []
             }
@@ -384,7 +406,7 @@ fn focus_event_records_the_canonical_workspace_path() -> Result<()> {
     let alias = fixture.file("workspace-alias");
     fs::create_dir(&workspace)?;
     symlink(&workspace, &alias)?;
-    fixture.write_snapshot(&workspace_snapshot("focused", &alias))?;
+    fixture.write_snapshot(&worktree_snapshot("focused", &alias))?;
     let event = json!({ "data": { "workspace_id": "focused" } });
 
     let output = fixture
@@ -411,7 +433,7 @@ fn picker_keeps_open_workspaces_available_when_zoxide_fails() -> Result<()> {
     let fixture = Fixture::new()?;
     let workspace = fixture.file("workspace");
     fs::create_dir(&workspace)?;
-    fixture.write_snapshot(&workspace_snapshot("workspace", &workspace))?;
+    fixture.write_snapshot(&worktree_snapshot("workspace", &workspace))?;
     fixture.install_zoxide_failure()?;
 
     let output = run_picker(&fixture, b"\n")?;
@@ -445,15 +467,15 @@ fn picker_marks_matching_zoxide_paths_as_active_workspaces() -> Result<()> {
     let _guard = serial_guard();
     let fixture = Fixture::new()?;
     let directory = fixture.install_zoxide_directory()?;
-    fixture.write_snapshot(&workspace_snapshot("workspace", &directory))?;
+    fixture.write_snapshot(&worktree_snapshot("workspace", &directory))?;
 
     let output = run_picker(&fixture, b"\n")?;
 
     ensure_success(&output)?;
     anyhow::ensure!(
         String::from_utf8_lossy(&output.stdout)
-            .contains("\x1b[7m\x1b[36m● [workspace]\x1b[39m project"),
-        "picker did not mark the active zoxide path"
+            .contains("\x1b[7m\x1b[38;2;249;226;175m● [worktree]\x1b[39m project"),
+        "picker did not mark the active worktree path"
     );
     anyhow::ensure!(
         fixture.log("herdr.log")? == "api snapshot\nworkspace focus workspace\n",
@@ -463,6 +485,34 @@ fn picker_marks_matching_zoxide_paths_as_active_workspaces() -> Result<()> {
     anyhow::ensure!(
         fixture.mru_paths()? == expected_paths,
         "picker did not persist the active zoxide path"
+    );
+    ensure_terminal_restored(&fixture)
+}
+
+#[test]
+fn picker_renders_regular_workspaces_with_the_workspace_tag() -> Result<()> {
+    let _guard = serial_guard();
+    let fixture = Fixture::new()?;
+    let workspace = fixture.file("workspace");
+    fs::create_dir(&workspace)?;
+    fixture.write_snapshot(&workspace_snapshot(
+        "workspace",
+        "worktree-feature",
+        &workspace,
+    ))?;
+    fixture.install_empty_zoxide()?;
+
+    let output = run_picker(&fixture, b"\n")?;
+
+    ensure_success(&output)?;
+    anyhow::ensure!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("\x1b[7m\x1b[36m● [workspace]\x1b[39m worktree-feature"),
+        "picker did not render the ordinary workspace tag and label"
+    );
+    anyhow::ensure!(
+        fixture.log("herdr.log")? == "api snapshot\nworkspace focus workspace\n",
+        "picker did not focus the ordinary workspace"
     );
     ensure_terminal_restored(&fixture)
 }
@@ -528,7 +578,7 @@ fn picker_cancellation_has_no_workspace_side_effect() -> Result<()> {
     let fixture = Fixture::new()?;
     let workspace = fixture.file("workspace");
     fs::create_dir(&workspace)?;
-    fixture.write_snapshot(&workspace_snapshot("workspace", &workspace))?;
+    fixture.write_snapshot(&worktree_snapshot("workspace", &workspace))?;
     fixture.install_empty_zoxide()?;
 
     let output = run_picker(&fixture, b"\x1b")?;

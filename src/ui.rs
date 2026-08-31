@@ -12,6 +12,7 @@ const DEFAULT_VISIBLE_ROWS: usize = 10;
 const LAYOUT_ROWS: usize = 6;
 const CONTENT_INDENT: &str = "  ";
 const WORKSPACE_COLOR: &str = "\x1b[36m";
+const WORKTREE_COLOR: &str = "\x1b[38;2;249;226;175m";
 const ZOXIDE_COLOR: &str = "\x1b[35m";
 const RESET_FOREGROUND: &str = "\x1b[39m";
 
@@ -199,8 +200,10 @@ fn render_error(stdout: &mut io::Stdout, message: &str) -> Result<()> {
     Ok(())
 }
 
-fn write_candidate(stdout: &mut io::Stdout, candidate: &Candidate) -> io::Result<()> {
-    let (color, marker, source) = if candidate.is_workspace() {
+fn write_candidate(stdout: &mut impl Write, candidate: &Candidate) -> io::Result<()> {
+    let (color, marker, source) = if candidate.is_worktree() {
+        (WORKTREE_COLOR, "●", "worktree")
+    } else if candidate.is_workspace() {
         (WORKSPACE_COLOR, "●", "workspace")
     } else {
         (ZOXIDE_COLOR, " ", "zoxide")
@@ -337,6 +340,37 @@ fn safe_terminal_text(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn renders_worktrees_with_a_yellow_tag() -> anyhow::Result<()> {
+        let candidate = herdr_workspacer::merge_candidates(
+            vec![herdr_workspacer::Workspace {
+                id: "worktree-feature".to_string(),
+                label: "worktree-feature".to_string(),
+                is_worktree: true,
+                path: std::env::temp_dir(),
+                native_order: 0,
+            }],
+            Vec::new(),
+            &herdr_workspacer::MruState::default(),
+        )?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing worktree candidate"))?;
+        let mut output = Vec::new();
+
+        write_candidate(&mut output, &candidate)?;
+        let actual = String::from_utf8(output)?;
+        anyhow::ensure!(
+            actual
+                == format!(
+                    "\x1b[38;2;249;226;175m● [worktree]\x1b[39m feature  {}",
+                    candidate.display_path
+                ),
+            "worktree row did not use its yellow tag and trimmed name: {actual:?}"
+        );
+        Ok(())
+    }
     use std::io::Cursor;
 
     use super::*;

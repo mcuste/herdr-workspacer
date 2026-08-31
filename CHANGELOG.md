@@ -6,6 +6,14 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Added
+
+- The picker shows linked Git worktrees with a distinct tag and label.
+
+### Fixed
+
+- Primary Git workspaces no longer appear as linked worktrees.
+
 ## [0.1.2] - 2026-08-26
 
 ### Changed

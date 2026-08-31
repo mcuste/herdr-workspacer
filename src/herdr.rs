@@ -41,6 +41,8 @@ struct ApiWorkspace {
 #[derive(Debug, Deserialize)]
 struct Worktree {
     checkout_path: PathBuf,
+    #[serde(default)]
+    is_linked_worktree: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -146,6 +148,10 @@ pub(crate) fn workspace_source(snapshot: &Snapshot) -> WorkspaceSource {
             workspace_path(snapshot, workspace).map(|path| Workspace {
                 id: workspace.workspace_id.clone(),
                 label: workspace.label.clone(),
+                is_worktree: workspace
+                    .worktree
+                    .as_ref()
+                    .is_some_and(|worktree| worktree.is_linked_worktree),
                 path,
                 native_order,
             })
@@ -266,6 +272,41 @@ mod tests {
                     .first()
                     .map(|workspace| &workspace.path),
                 Some(&PathBuf::from("/worktree"))
+            );
+        }
+    }
+
+    #[test]
+    fn treats_primary_git_workspaces_as_regular_workspaces() {
+        let snapshot = snapshot(
+            r#"
+            {
+              "result": {
+                "snapshot": {
+                  "workspaces": [{
+                    "workspace_id": "w1",
+                    "label": "loom",
+                    "active_tab_id": "w1:t1",
+                    "worktree": {
+                      "checkout_path": "/loom",
+                      "is_linked_worktree": false
+                    }
+                  }],
+                  "panes": []
+                }
+              }
+            }
+        "#,
+        );
+
+        assert!(snapshot.is_some());
+        if let Some(snapshot) = snapshot {
+            assert_eq!(
+                workspace_source(&snapshot)
+                    .workspaces
+                    .first()
+                    .map(|workspace| workspace.is_worktree),
+                Some(false)
             );
         }
     }

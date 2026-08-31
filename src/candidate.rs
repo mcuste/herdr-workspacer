@@ -33,6 +33,7 @@ pub struct Candidate {
     pub display_path: String,
     /// The workspace or directory label.
     pub label: String,
+    pub(crate) is_worktree: bool,
     pub(crate) search_text: String,
     pub(crate) zoxide_score: Option<f64>,
     pub(crate) source_order: usize,
@@ -45,6 +46,8 @@ pub struct Workspace {
     pub id: String,
     /// The label shown by Herdr.
     pub label: String,
+    /// Whether Herdr created this workspace for a Git worktree.
+    pub is_worktree: bool,
     /// The workspace's stable directory.
     pub path: PathBuf,
     /// Its order in Herdr's workspace snapshot.
@@ -54,9 +57,9 @@ pub struct Workspace {
 impl Candidate {
     fn workspace(workspace: Workspace, canonical_path: PathBuf) -> Self {
         let display_path = display_path(&workspace.path);
-        let search_text = search_text(&workspace.label, &display_path);
-        let label = safe_terminal_text(&workspace.label);
-
+        let raw_label = worktree_label(&workspace.label, workspace.is_worktree);
+        let search_text = format!("{} {raw_label} {display_path}", workspace.label);
+        let label = safe_terminal_text(raw_label);
         Self {
             kind: CandidateKind::Workspace {
                 workspace_id: workspace.id,
@@ -65,6 +68,7 @@ impl Candidate {
             canonical_path,
             display_path,
             label,
+            is_worktree: workspace.is_worktree,
             search_text,
             zoxide_score: None,
             source_order: workspace.native_order,
@@ -90,6 +94,7 @@ impl Candidate {
             canonical_path,
             display_path,
             label,
+            is_worktree: false,
             search_text,
             zoxide_score: Some(entry.score),
             source_order,
@@ -99,6 +104,11 @@ impl Candidate {
     /// Returns whether selecting this candidate focuses an open workspace.
     pub fn is_workspace(&self) -> bool {
         matches!(self.kind, CandidateKind::Workspace { .. })
+    }
+
+    /// Returns whether this workspace represents a Git worktree.
+    pub fn is_worktree(&self) -> bool {
+        self.is_workspace() && self.is_worktree
     }
 }
 
@@ -143,6 +153,13 @@ pub fn normalize_path(path: &Path) -> Result<PathBuf> {
     Ok(std::fs::canonicalize(&absolute_path).unwrap_or(absolute_path))
 }
 
+fn worktree_label(label: &str, is_worktree: bool) -> &str {
+    if is_worktree {
+        label.strip_prefix("worktree-").unwrap_or(label)
+    } else {
+        label
+    }
+}
 fn sort_candidates(candidates: &mut [Candidate], mru: &MruState) {
     let ranks: HashMap<_, _> = mru
         .paths
@@ -264,6 +281,7 @@ mod tests {
         Workspace {
             id: id.to_string(),
             label: id.to_string(),
+            is_worktree: false,
             path: PathBuf::from(path),
             native_order,
         }
@@ -360,6 +378,32 @@ mod tests {
     #[test]
     fn searches_the_displayed_path() {
         assert_eq!(search_text("dotfiles", "~/dotfiles"), "dotfiles ~/dotfiles");
+    }
+
+    #[test]
+    fn worktree_candidates_hide_the_generated_label_prefix() -> Result<()> {
+        let path = std::env::temp_dir();
+        let candidates = merge_candidates(
+            vec![Workspace {
+                id: "worktree-feature".to_string(),
+                label: "worktree-feature".to_string(),
+                is_worktree: true,
+                path,
+                native_order: 0,
+            }],
+            Vec::new(),
+            &MruState::default(),
+        )?;
+
+        let candidate = candidates
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("missing worktree candidate"))?;
+        anyhow::ensure!(
+            candidate.label == "feature",
+            "worktree name kept its prefix"
+        );
+        anyhow::ensure!(candidate.is_worktree(), "worktree metadata was lost");
+        Ok(())
     }
 
     #[test]

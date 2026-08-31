@@ -41,6 +41,7 @@ mod tests {
             canonical_path: PathBuf::from(format!("/code/{label}")),
             display_path: format!("/code/{label}"),
             label: label.to_string(),
+            is_worktree: false,
             search_text: format!("{label} /code/{label} {label}"),
             zoxide_score: None,
             source_order: 0,
