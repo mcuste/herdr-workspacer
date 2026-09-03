@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-03
+
 ### Changed
 
 - The picker opens with the open workspaces at once and adds zoxide directories when they load.

@@ -1,6 +1,6 @@
 id = "herdr-workspacer"
 name = "Herdr Workspacer"
-version = "0.2.0"
+version = "0.3.0"
 min_herdr_version = "0.8.0"
 description = "MRU fuzzy workspace picker for Herdr and zoxide directories."
 platforms = ["linux", "macos"]
