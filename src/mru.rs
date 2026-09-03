@@ -217,144 +217,122 @@ fn unique_suffix() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Barrier};
+    use std::{
+        fs::File,
+        sync::{Arc, Barrier},
+    };
 
     use super::*;
+    use crate::test_support::TemporaryDirectory;
 
-    struct TemporaryDirectory {
-        path: PathBuf,
-    }
+    #[test]
+    fn records_most_recent_path_first() -> Result<()> {
+        let directory = TemporaryDirectory::new()?;
+        let store = MruStore::new(directory.path.clone());
+        let first = PathBuf::from("/first");
+        let second = PathBuf::from("/second");
 
-    impl TemporaryDirectory {
-        fn new() -> Option<Self> {
-            let path =
-                std::env::temp_dir().join(format!("herdr-workspacer-test-{}", unique_suffix()));
-            std::fs::create_dir_all(&path).ok().map(|()| Self { path })
-        }
-    }
+        store.record(first.clone())?;
+        store.record(second.clone())?;
+        store.record(first.clone())?;
 
-    impl Drop for TemporaryDirectory {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
+        anyhow::ensure!(
+            store.load()?.paths == vec![first, second],
+            "expected the repeated path first"
+        );
+        Ok(())
     }
 
     #[test]
-    fn records_most_recent_path_first() {
-        let directory = TemporaryDirectory::new();
-        assert!(directory.is_some());
-        if let Some(directory) = directory {
-            let store = MruStore::new(directory.path.clone());
-            let first = PathBuf::from("/first");
-            let second = PathBuf::from("/second");
+    fn truncates_history_to_the_configured_limit() -> Result<()> {
+        let directory = TemporaryDirectory::new()?;
+        let store = MruStore::new(directory.path.clone());
 
-            assert!(store.record(first.clone()).is_ok());
-            assert!(store.record(second.clone()).is_ok());
-            assert!(store.record(first.clone()).is_ok());
-
-            let state = store.load();
-            assert!(state.is_ok());
-            if let Ok(state) = state {
-                assert_eq!(state.paths, vec![first, second]);
-            }
+        for index in 0..=MRU_LIMIT {
+            store.record(PathBuf::from(format!("/{index}")))?;
         }
+
+        let state = store.load()?;
+        anyhow::ensure!(state.paths.len() == MRU_LIMIT, "history was not truncated");
+        anyhow::ensure!(
+            state.paths.first() == Some(&PathBuf::from(format!("/{MRU_LIMIT}"))),
+            "newest path was not kept"
+        );
+        anyhow::ensure!(
+            state.paths.last() == Some(&PathBuf::from("/1")),
+            "oldest path was not dropped"
+        );
+        Ok(())
     }
 
     #[test]
-    fn truncates_history_to_the_configured_limit() {
-        let directory = TemporaryDirectory::new();
-        assert!(directory.is_some());
-        if let Some(directory) = directory {
-            let store = MruStore::new(directory.path.clone());
+    fn recovers_from_corrupt_state() -> Result<()> {
+        let directory = TemporaryDirectory::new()?;
+        fs::write(directory.path.join(STATE_FILE), b"not json")?;
+        let store = MruStore::new(directory.path.clone());
 
-            for index in 0..=MRU_LIMIT {
-                assert!(store.record(PathBuf::from(format!("/{index}"))).is_ok());
-            }
+        let state = store.load()?;
 
-            let state = store.load();
-            assert!(state.is_ok());
-            if let Ok(state) = state {
-                assert_eq!(state.paths.len(), MRU_LIMIT);
-                assert_eq!(
-                    state.paths.first(),
-                    Some(&PathBuf::from(format!("/{MRU_LIMIT}")))
-                );
-                assert_eq!(state.paths.last(), Some(&PathBuf::from("/1")));
-            }
-        }
+        anyhow::ensure!(state == MruState::default(), "corrupt state was not reset");
+        let backup_count = fs::read_dir(&directory.path)?
+            .filter_map(std::result::Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("mru.json.invalid-")
+            })
+            .count();
+        anyhow::ensure!(
+            backup_count == 1,
+            "expected one backup of the corrupt state"
+        );
+        Ok(())
     }
 
     #[test]
-    fn recovers_from_corrupt_state() {
-        let directory = TemporaryDirectory::new();
-        assert!(directory.is_some());
-        if let Some(directory) = directory {
-            assert!(fs::write(directory.path.join(STATE_FILE), b"not json").is_ok());
-            let store = MruStore::new(directory.path.clone());
+    fn recovers_from_a_lock_left_by_a_crashed_process() -> Result<()> {
+        let directory = TemporaryDirectory::new()?;
+        let lock = File::create(directory.path.join(LOCK_FILE))?;
+        lock.set_modified(SystemTime::now() - Duration::from_secs(10))?;
+        let store = MruStore::new(directory.path.clone());
 
-            let state = store.load();
-            assert!(state.is_ok());
-            if let Ok(state) = state {
-                assert_eq!(state, MruState::default());
-            }
+        store.record(PathBuf::from("/first"))?;
 
-            let entries = fs::read_dir(&directory.path);
-            assert!(entries.is_ok());
-            if let Ok(entries) = entries {
-                let backup_count = entries
-                    .filter_map(std::result::Result::ok)
-                    .filter(|entry| {
-                        entry
-                            .file_name()
-                            .to_string_lossy()
-                            .starts_with("mru.json.invalid-")
-                    })
-                    .count();
-                assert_eq!(backup_count, 1);
-            }
-        }
+        anyhow::ensure!(
+            store.load()?.paths == vec![PathBuf::from("/first")],
+            "stale lock blocked the update"
+        );
+        Ok(())
     }
-    #[test]
-    fn serializes_concurrent_record_updates() {
-        let directory = TemporaryDirectory::new();
-        assert!(directory.is_some());
-        if let Some(directory) = directory {
-            let barrier = Arc::new(Barrier::new(2));
-            let first_barrier = Arc::clone(&barrier);
-            let first_path = directory.path.clone();
-            let first = std::thread::spawn(move || {
-                first_barrier.wait();
-                MruStore::new(first_path)
-                    .record(PathBuf::from("/first"))
-                    .is_ok()
-            });
 
-            let second_path = directory.path.clone();
-            let second = std::thread::spawn(move || {
+    #[test]
+    fn serializes_concurrent_record_updates() -> Result<()> {
+        let directory = TemporaryDirectory::new()?;
+        let barrier = Arc::new(Barrier::new(2));
+        let workers = ["/first", "/second"].map(|path| {
+            let barrier = Arc::clone(&barrier);
+            let state_dir = directory.path.clone();
+            std::thread::spawn(move || {
                 barrier.wait();
-                MruStore::new(second_path)
-                    .record(PathBuf::from("/second"))
-                    .is_ok()
-            });
+                MruStore::new(state_dir).record(PathBuf::from(path))
+            })
+        });
 
-            let first_result = first.join();
-            let second_result = second.join();
-            assert!(first_result.is_ok());
-            assert!(second_result.is_ok());
-            if let Ok(recorded) = first_result {
-                assert!(recorded);
-            }
-            if let Ok(recorded) = second_result {
-                assert!(recorded);
-            }
-
-            let state = MruStore::new(directory.path.clone()).load();
-            assert!(state.is_ok());
-            if let Ok(state) = state {
-                assert_eq!(state.paths.len(), 2);
-                assert!(state.paths.contains(&PathBuf::from("/first")));
-                assert!(state.paths.contains(&PathBuf::from("/second")));
-            }
+        for worker in workers {
+            worker
+                .join()
+                .map_err(|_| anyhow::anyhow!("record thread panicked"))??;
         }
+
+        let state = MruStore::new(directory.path.clone()).load()?;
+        anyhow::ensure!(
+            state.paths.len() == 2
+                && state.paths.contains(&PathBuf::from("/first"))
+                && state.paths.contains(&PathBuf::from("/second")),
+            "concurrent updates lost a path: {:?}",
+            state.paths
+        );
+        Ok(())
     }
 }

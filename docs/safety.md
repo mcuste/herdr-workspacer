@@ -41,9 +41,10 @@ The plugin runs these external operations:
 A non-zero Herdr exit is an error. Its trimmed standard error is shown to the user. A zoxide failure
 is non-fatal because zoxide is an optional candidate source.
 
-The manifest uses `sh -c` only to locate the installed binary through the fixed
-`HERDR_PLUGIN_ROOT` environment variable and replace the shell with that binary. No candidate or
-session value is inserted into those command strings.
+The manifest commands name `bin/herdr-workspacer` relative to the plugin directory, which Herdr
+uses as the working directory. Herdr starts the binary without a shell. Terminal raw mode and
+restoration use termios calls on the popup's standard input, so the picker runs no other external
+program.
 
 ## Path handling
 
@@ -52,7 +53,8 @@ Canonical paths provide identity for deduplication and MRU ranking. The original
 one sent to Herdr when creating a workspace, so symlink-based directory choices keep their user
 visible spelling.
 
-Only zoxide paths that are directories at picker load time become candidates. A selection is not a
+Only zoxide paths that are directories when the picker checks them become candidates. The checks
+run on worker threads, and a path that does not answer within 500 ms joins the list when it does. A selection is not a
 filesystem authorization check: Herdr decides whether the current user may create a workspace at
 that path. The plugin performs no file reads inside candidate directories.
 

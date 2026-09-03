@@ -13,7 +13,7 @@
 | `src/mru.rs` | Locked and atomic MRU state persistence |
 | `src/zoxide.rs` | Optional zoxide query and record parsing |
 | `src/lib.rs` | Library exports used by the binary and integration tests |
-| `tests/` | Tests of the public library boundary |
+| `tests/` | Tests of the public library boundary and of the process contract through a pseudo-terminal |
 | `herdr-plugin.toml` | Plugin actions, popup pane, focus event, and install build step |
 | `docs/demo/` | VHS tape and start script for the recorded README demo |
 | `scripts/fetch-or-build.sh` | Verified release download with a Cargo source-build fallback |
@@ -27,8 +27,10 @@
 The plugin has three process entry points:
 
 1. `open` asks Herdr to open the plugin's `picker` popup.
-2. `picker` reads a Herdr snapshot, MRU state, and optional zoxide records. It merges and displays
-   candidates, then focuses or creates the selected workspace.
+2. `picker` reads a Herdr snapshot and MRU state, then shows the open workspaces. A background
+   thread loads zoxide records and checks their directories on worker threads. The picker merges
+   those directories into the list while it waits for input, then focuses or creates the selected
+   workspace.
 3. `record-focus` handles Herdr's `workspace.focused` event and records that workspace's canonical
    directory in MRU state.
 
@@ -67,13 +69,19 @@ same command locally so CI does not apply a second convention.
 
 ## Testing
 
-Unit tests live beside the module they exercise. They cover candidate precedence and deduplication,
-fuzzy-order stability, snapshot conversion, MRU recovery and concurrent writes, terminal rendering,
-and zoxide parsing. `tests/core_api.rs` protects the public library boundary used by the binary.
+Unit tests live beside the module they exercise. `tests/cli.rs` runs the built binary against fake
+`herdr` and `zoxide` scripts. Picker tests open a pseudo-terminal, wait for expected output, then
+send keys, so they also check raw mode and terminal restoration. They cover candidate precedence and
+deduplication, fuzzy-order stability, snapshot conversion, MRU recovery and concurrent writes,
+terminal rendering, and zoxide parsing. `tests/core_api.rs` protects the public library boundary
+used by the binary.
 
 Tests must not depend on a live Herdr server, a user's zoxide database, or fixed home-directory
-contents. Build values explicitly and use isolated temporary directories for filesystem behavior.
-Prefer an assertion on the result or state transition over an assertion on private call order.
+contents. The CLI test fixture sets `HOME` and `HERDR_WORKSPACER_ZOXIDE_PATH` to its own directory
+and installs a fake zoxide by default. Build values explicitly and use isolated temporary
+directories for filesystem behavior. Do not wait with a fixed delay. When a test needs a fake
+binary to wait, make the fake wait for a file that the test creates. Prefer an assertion on the
+result or state transition over an assertion on private call order.
 
 For a behavior change:
 
@@ -98,7 +106,8 @@ Test with zoxide available and unavailable. Confirm that open workspaces remain 
 cases. Select an existing workspace, a zoxide-only directory, and a directory that becomes a
 workspace while the popup is open. Restart Herdr and confirm that recorded paths retain MRU order.
 
-The plugin manifest invokes `bin/herdr-workspacer`. Recopy the debug binary after rebuilding, or
+The plugin manifest runs `bin/herdr-workspacer` relative to the plugin directory, which Herdr uses
+as the working directory. Recopy the debug binary after rebuilding, or
 relink the plugin if the Herdr development workflow replaces the plugin directory.
 
 ## Demo recording

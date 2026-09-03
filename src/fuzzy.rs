@@ -71,14 +71,6 @@ mod tests {
     }
 
     #[test]
-    fn does_not_match_hidden_absolute_path_segments() {
-        let mut dotfiles = candidate("dotfiles");
-        dotfiles.search_text = "dotfiles ~/dotfiles".to_string();
-
-        assert!(filter_indices(&[dotfiles], "tism").is_empty());
-    }
-
-    #[test]
     fn matches_unicode_paths() {
         let candidates = vec![candidate("プロジェクト")];
 

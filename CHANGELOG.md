@@ -6,6 +6,16 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Changed
+
+- The picker opens with the open workspaces at once and adds zoxide directories when they load.
+- zoxide directory checks run in parallel, so one unresponsive path no longer delays the popup.
+- `merge_candidates` no longer checks that zoxide paths exist. Use `load_zoxide_directories` to
+  get checked entries.
+- Terminal setup uses termios calls instead of running `stty`.
+- Plugin commands run the binary directly instead of through `sh`.
+- zoxide discovery skips install locations that do not exist.
+
 ## [0.2.0] - 2026-08-31
 
 ### Added

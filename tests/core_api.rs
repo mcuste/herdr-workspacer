@@ -6,10 +6,8 @@ use herdr_workspacer::{
 
 #[test]
 fn fuzzy_relevance_overrides_mru_order() -> anyhow::Result<()> {
-    let first = std::env::temp_dir();
-    let Some(second) = first.parent().map(std::path::Path::to_path_buf) else {
-        anyhow::bail!("temporary directory has no parent");
-    };
+    let first = std::path::PathBuf::from("/projects/herdr");
+    let second = std::path::PathBuf::from("/projects/old-herdr");
     let candidates = merge_candidates(
         vec![
             Workspace {
@@ -64,7 +62,7 @@ fn worktree_labels_match_generated_and_displayed_forms() -> anyhow::Result<()> {
             id: "worktree-feature".to_string(),
             label: "worktree-feature".to_string(),
             is_worktree: true,
-            path: std::env::temp_dir(),
+            path: std::path::PathBuf::from("/projects/feature"),
             native_order: 0,
         }],
         Vec::new(),

@@ -14,21 +14,21 @@ if [ -z "$version" ]; then
 fi
 
 case $(uname -s) in
-    Darwin) platform=macos ;;
-    Linux) platform=linux ;;
-    *)
-        printf 'Unsupported operating system: %s\n' "$(uname -s)" >&2
-        exit 1
-        ;;
+Darwin) platform=macos ;;
+Linux) platform=linux ;;
+*)
+    printf 'Unsupported operating system: %s\n' "$(uname -s)" >&2
+    exit 1
+    ;;
 esac
 
 case $(uname -m) in
-    x86_64) architecture=x86_64 ;;
-    arm64 | aarch64) architecture=aarch64 ;;
-    *)
-        printf 'Unsupported architecture: %s\n' "$(uname -m)" >&2
-        exit 1
-        ;;
+x86_64) architecture=x86_64 ;;
+arm64 | aarch64) architecture=aarch64 ;;
+*)
+    printf 'Unsupported architecture: %s\n' "$(uname -m)" >&2
+    exit 1
+    ;;
 esac
 
 asset="herdr-workspacer-${platform}-${architecture}"
@@ -38,11 +38,11 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-if command -v curl >/dev/null 2>&1 \
-    && curl --fail --location --silent --show-error \
+if command -v curl >/dev/null 2>&1 &&
+    curl --fail --location --silent --show-error \
         --output "$temporary_dir/$asset" \
-        "https://github.com/mcuste/herdr-workspacer/releases/download/v${version}/$asset" \
-    && curl --fail --location --silent --show-error \
+        "https://github.com/mcuste/herdr-workspacer/releases/download/v${version}/$asset" &&
+    curl --fail --location --silent --show-error \
         --output "$temporary_dir/SHA256SUMS" \
         "https://github.com/mcuste/herdr-workspacer/releases/download/v${version}/SHA256SUMS"; then
     expected=$(awk -v asset="$asset" '$2 == asset { print $1; exit }' "$temporary_dir/SHA256SUMS")
@@ -67,8 +67,14 @@ fi
 
 if command -v cargo >/dev/null 2>&1; then
     cargo build --release --locked
+    target_directory=$(cargo metadata --no-deps --format-version 1 |
+        sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
+    if [ -z "$target_directory" ]; then
+        printf '%s\n' 'Could not read Cargo target directory.' >&2
+        exit 1
+    fi
     mkdir -p "$bin_dir"
-    install -m 755 target/release/herdr-workspacer "$binary"
+    install -m 755 "$target_directory/release/herdr-workspacer" "$binary"
     exit 0
 fi
 

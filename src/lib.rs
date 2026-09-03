@@ -3,13 +3,19 @@
 mod candidate;
 mod fuzzy;
 mod mru;
+#[cfg(test)]
+mod test_support;
 mod zoxide;
 
 /// Workspace and directory candidates plus merge and path operations.
-pub use candidate::{Candidate, CandidateKind, Workspace, merge_candidates, normalize_path};
+pub use candidate::{
+    Candidate, CandidateKind, Workspace, existing_directories, merge_candidates, normalize_path,
+};
 /// Fuzzy filtering that preserves the caller's candidate order.
 pub use fuzzy::filter_indices;
 /// Persistent most-recently-used workspace state.
 pub use mru::{MruState, MruStore};
 /// zoxide candidate loading and parsed records.
-pub use zoxide::{ZoxideEntry, ZoxideSource, load as load_zoxide};
+pub use zoxide::{
+    ZoxideEntry, ZoxideSource, load as load_zoxide, load_directories as load_zoxide_directories,
+};

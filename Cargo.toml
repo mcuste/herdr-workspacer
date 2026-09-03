@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1.0.104"
 fuzzy-matcher = "0.3.7"
+rustix = { version = "1.1.4", features = ["termios"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 
@@ -52,6 +53,9 @@ as_conversions = "deny"
 cast_possible_truncation = "deny"
 cast_sign_loss = "deny"
 integer_division = "deny"
+
+[dev-dependencies]
+rustix = { version = "1.1.4", features = ["pty", "fs", "termios"] }
 
 [package.metadata.cargo-machete]
 ignored = [

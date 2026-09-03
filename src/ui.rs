@@ -1,9 +1,9 @@
-use std::{
-    io::{self, Read, Write},
-    process::{Command, Stdio},
-};
+use std::io::{self, Read, Write};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
+use rustix::termios::{
+    OptionalActions, SpecialCodeIndex, Termios, tcgetattr, tcgetwinsize, tcsetattr,
+};
 
 use crate::app::PickerModel;
 use herdr_workspacer::Candidate;
@@ -21,9 +21,13 @@ pub(crate) enum PickerOutcome {
     Selected(usize),
 }
 
-pub(crate) fn run(model: &mut PickerModel) -> Result<PickerOutcome> {
+/// `apply_updates` runs while no key is pending and returns whether the model changed.
+pub(crate) fn run(
+    model: &mut PickerModel,
+    apply_updates: impl FnMut(&mut PickerModel) -> Result<bool>,
+) -> Result<PickerOutcome> {
     let mut terminal = TerminalSession::enter()?;
-    let result = terminal.run(model);
+    let result = terminal.run(model, apply_updates);
     let restore_result = terminal.restore();
 
     match result {
@@ -47,7 +51,7 @@ pub(crate) fn show_error(message: &str) -> Result<()> {
 
 struct TerminalSession {
     stdout: io::Stdout,
-    stty_state: String,
+    saved_state: Termios,
     visible_rows: usize,
     active: bool,
 }
@@ -58,38 +62,50 @@ impl TerminalSession {
             .unwrap_or(DEFAULT_VISIBLE_ROWS)
             .saturating_sub(LAYOUT_ROWS)
             .max(1);
-        let stty_state = stty_output(["-g"])?;
-        let stty_state = String::from_utf8_lossy(&stty_state.stdout)
-            .trim()
-            .to_string();
-        if stty_state.is_empty() {
-            bail!("could not read terminal state");
-        }
+        let stdin = io::stdin();
+        let saved_state = tcgetattr(&stdin).context("could not read terminal state")?;
 
-        run_stty(["raw", "-echo", "min", "0", "time", "1"])?;
+        // Reads time out after 100 ms so background updates can be applied.
+        let mut raw_state = saved_state.clone();
+        raw_state.make_raw();
+        raw_state.special_codes[SpecialCodeIndex::VMIN] = 0;
+        raw_state.special_codes[SpecialCodeIndex::VTIME] = 1;
+        tcsetattr(&stdin, OptionalActions::Now, &raw_state)
+            .context("could not switch the terminal to raw mode")?;
+
         let mut stdout = io::stdout();
         if let Err(error) = write!(stdout, "\x1b[?1049h\x1b[?25l").and_then(|()| stdout.flush()) {
             let _ = write!(stdout, "\x1b[?25h\x1b[?1049l");
-            let _ = run_stty([stty_state.as_str()]);
+            let _ = tcsetattr(&stdin, OptionalActions::Now, &saved_state);
             return Err(error.into());
         }
 
         Ok(Self {
             stdout,
-            stty_state,
+            saved_state,
             visible_rows,
             active: true,
         })
     }
 
-    fn run(&mut self, model: &mut PickerModel) -> Result<PickerOutcome> {
+    fn run(
+        &mut self,
+        model: &mut PickerModel,
+        mut apply_updates: impl FnMut(&mut PickerModel) -> Result<bool>,
+    ) -> Result<PickerOutcome> {
         let stdin = io::stdin();
         let mut input = stdin.lock();
         let page_size = isize::try_from(self.visible_rows).unwrap_or(isize::MAX);
 
+        render_picker(&mut self.stdout, model, self.visible_rows)?;
         loop {
-            render_picker(&mut self.stdout, model, self.visible_rows)?;
-            match read_key(&mut input)? {
+            let Some(key) = read_key(&mut input)? else {
+                if apply_updates(model)? {
+                    render_picker(&mut self.stdout, model, self.visible_rows)?;
+                }
+                continue;
+            };
+            match key {
                 Key::Cancel => return Ok(PickerOutcome::Cancelled),
                 Key::Select => {
                     return Ok(model
@@ -105,6 +121,7 @@ impl TerminalSession {
                 Key::Character(character) => model.push_query_character(character),
                 Key::Ignore => {}
             }
+            render_picker(&mut self.stdout, model, self.visible_rows)?;
         }
     }
 
@@ -112,9 +129,9 @@ impl TerminalSession {
         let stdin = io::stdin();
         let mut input = stdin.lock();
 
+        render_error(&mut self.stdout, message)?;
         loop {
-            render_error(&mut self.stdout, message)?;
-            if matches!(read_key(&mut input)?, Key::Cancel | Key::Select) {
+            if matches!(read_key(&mut input)?, Some(Key::Cancel | Key::Select)) {
                 return Ok(());
             }
         }
@@ -128,9 +145,10 @@ impl TerminalSession {
 
         let terminal_result =
             write!(self.stdout, "\x1b[?25h\x1b[?1049l").and_then(|()| self.stdout.flush());
-        let stty_result = run_stty([self.stty_state.as_str()]);
+        let state_result = tcsetattr(io::stdin(), OptionalActions::Now, &self.saved_state)
+            .context("could not restore terminal state");
         terminal_result?;
-        stty_result
+        state_result
     }
 }
 
@@ -215,30 +233,12 @@ fn write_candidate(stdout: &mut impl Write, candidate: &Candidate) -> io::Result
     )
 }
 
-fn stty_output<const N: usize>(arguments: [&str; N]) -> Result<std::process::Output> {
-    let output = Command::new("stty")
-        .args(arguments)
-        .stdin(Stdio::inherit())
-        .output()
-        .context("could not run stty")?;
-    if output.status.success() {
-        Ok(output)
-    } else {
-        bail!("stty exited with {}", output.status)
-    }
-}
-
-fn run_stty<const N: usize>(arguments: [&str; N]) -> Result<()> {
-    stty_output(arguments).map(|_| ())
-}
-
 fn terminal_rows() -> Option<usize> {
-    let output = stty_output(["size"]).ok()?;
-    let size = String::from_utf8_lossy(&output.stdout);
-    size.split_whitespace().next()?.parse().ok()
+    let size = tcgetwinsize(io::stdout()).ok()?;
+    (size.ws_row > 0).then(|| usize::from(size.ws_row))
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum Key {
     Cancel,
     Select,
@@ -252,8 +252,11 @@ enum Key {
     Ignore,
 }
 
-fn read_key(input: &mut impl Read) -> io::Result<Key> {
-    let byte = read_byte(input)?;
+/// `None` means the terminal read timed out.
+fn read_key(input: &mut impl Read) -> io::Result<Option<Key>> {
+    let Some(byte) = read_optional_byte(input)? else {
+        return Ok(None);
+    };
     match byte {
         b'\x03' => Ok(Key::Cancel),
         b'\x1b' => read_escape(input),
@@ -266,6 +269,7 @@ fn read_key(input: &mut impl Read) -> io::Result<Key> {
         byte if byte.is_ascii() => Ok(Key::Character(char::from(byte))),
         byte => read_utf8_character(input, byte),
     }
+    .map(Some)
 }
 
 fn read_escape(input: &mut impl Read) -> io::Result<Key> {
@@ -396,13 +400,23 @@ mod tests {
 
         for (input, expected) in cases {
             let actual = read_key(&mut Cursor::new(input))?;
-            anyhow::ensure!(actual == expected, "expected {expected:?}, got {actual:?}");
+            anyhow::ensure!(
+                actual == Some(expected.clone()),
+                "expected {expected:?}, got {actual:?}"
+            );
         }
         let actual = read_key(&mut Cursor::new("プロ".as_bytes()))?;
         anyhow::ensure!(
-            actual == Key::Character('プ'),
+            actual == Some(Key::Character('プ')),
             "expected a Unicode character, got {actual:?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn reports_a_timed_out_read_without_input() -> anyhow::Result<()> {
+        let actual = read_key(&mut Cursor::new(b""))?;
+        anyhow::ensure!(actual.is_none(), "expected no key, got {actual:?}");
         Ok(())
     }
 
@@ -411,7 +425,7 @@ mod tests {
         for input in [&b"\x1b[Z"[..], &b"\xe3\x28\x28"[..], &b"\xff"[..]] {
             let actual = read_key(&mut Cursor::new(input))?;
             anyhow::ensure!(
-                actual == Key::Ignore,
+                actual == Some(Key::Ignore),
                 "expected ignored input, got {actual:?}"
             );
         }

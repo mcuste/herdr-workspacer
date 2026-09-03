@@ -3,7 +3,10 @@ use std::{
     io,
     path::PathBuf,
     process::{Command, Stdio},
+    time::Duration,
 };
+
+use crate::candidate::existing_directories;
 
 /// A zoxide directory with its ranking score.
 #[derive(Clone, Debug)]
@@ -37,6 +40,25 @@ const SYSTEM_ZOXIDE_BINARIES: &[&str] = &[
 /// Loads zoxide records from PATH and standard install locations without failing when unavailable.
 pub fn load() -> ZoxideSource {
     load_from_paths(zoxide_binaries())
+}
+
+/// Loads zoxide records and keeps the ones whose paths are directories.
+///
+/// Directory checks follow [`existing_directories`]. A zoxide failure produces one update that
+/// carries the warning.
+pub fn load_directories(wait: Duration, mut on_update: impl FnMut(ZoxideSource)) {
+    let source = load();
+    if source.entries.is_empty() {
+        on_update(source);
+        return;
+    }
+
+    existing_directories(source.entries, wait, |entries| {
+        on_update(ZoxideSource {
+            entries,
+            warning: None,
+        });
+    });
 }
 
 fn zoxide_binaries() -> Vec<PathBuf> {
@@ -83,6 +105,9 @@ fn zoxide_binaries_from_environment(
 
 fn load_from_paths(paths: impl IntoIterator<Item = PathBuf>) -> ZoxideSource {
     for binary in paths {
+        if binary.is_absolute() && !binary.is_file() {
+            continue;
+        }
         let output = Command::new(&binary)
             .args(["query", "-ls"])
             .stdin(Stdio::null())
@@ -139,46 +164,11 @@ fn parse_line(line: &str) -> Option<ZoxideEntry> {
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
-    use std::{
-        fs,
-        os::unix::fs::PermissionsExt,
-        sync::atomic::{AtomicU64, Ordering},
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::{fs, os::unix::fs::PermissionsExt};
 
     use super::*;
-
     #[cfg(unix)]
-    static NEXT_TEMPORARY_DIRECTORY: AtomicU64 = AtomicU64::new(0);
-
-    #[cfg(unix)]
-    struct TemporaryDirectory {
-        path: std::path::PathBuf,
-    }
-
-    #[cfg(unix)]
-    impl TemporaryDirectory {
-        fn new() -> anyhow::Result<Self> {
-            let sequence = NEXT_TEMPORARY_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-            let timestamp = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_nanos());
-            let path = std::env::temp_dir().join(format!(
-                "herdr-workspacer-zoxide-{}-{timestamp}-{sequence}",
-                std::process::id()
-            ));
-            let _ = fs::remove_dir_all(&path);
-            fs::create_dir(&path)?;
-            Ok(Self { path })
-        }
-    }
-
-    #[cfg(unix)]
-    impl Drop for TemporaryDirectory {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
+    use crate::test_support::TemporaryDirectory;
 
     #[test]
     fn parses_tab_delimited_paths_with_spaces() {
@@ -240,6 +230,39 @@ mod tests {
         anyhow::ensure!(
             binaries == expected,
             "zoxide discovery returned unexpected locations"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn warns_when_no_zoxide_binary_exists() {
+        let source = load_from_paths([
+            PathBuf::from("herdr-workspacer-missing-zoxide"),
+            PathBuf::from("/herdr-workspacer/missing/zoxide"),
+        ]);
+
+        assert!(source.entries.is_empty());
+        assert_eq!(
+            source.warning.as_deref(),
+            Some("zoxide not found. Showing open workspaces only.")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn warns_when_the_zoxide_binary_cannot_run() -> anyhow::Result<()> {
+        let directory = TemporaryDirectory::new()?;
+        let binary = directory.path.join("zoxide");
+        fs::write(&binary, "#!/bin/sh\nexit 0\n")?;
+
+        let source = load_from_paths([binary]);
+
+        anyhow::ensure!(source.entries.is_empty(), "unexpected entries");
+        anyhow::ensure!(
+            source.warning.as_deref()
+                == Some("zoxide could not run. Showing open workspaces only."),
+            "unexpected warning: {:?}",
+            source.warning
         );
         Ok(())
     }

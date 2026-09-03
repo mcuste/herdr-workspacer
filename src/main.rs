@@ -4,9 +4,12 @@ mod app;
 mod herdr;
 mod ui;
 
+use std::{sync::mpsc, thread, time::Duration};
+
 use anyhow::{Context, Result};
 use herdr_workspacer::{
-    Candidate, CandidateKind, MruStore, load_zoxide, merge_candidates, normalize_path,
+    Candidate, CandidateKind, MruState, MruStore, Workspace, ZoxideSource, load_zoxide_directories,
+    merge_candidates, normalize_path,
 };
 
 use crate::{
@@ -45,14 +48,17 @@ fn run_picker() -> Result<()> {
     result
 }
 
+/// Directory checks slower than this join the list in a later update.
+const ZOXIDE_DIRECTORY_WAIT: Duration = Duration::from_millis(500);
+
 fn run_picker_inner() -> Result<()> {
     let client = HerdrClient::from_environment()?;
     let mru_store = MruStore::from_environment()?;
+    let zoxide_updates = load_zoxide_in_background();
     let snapshot = client.snapshot()?;
     let workspace_source = workspace_source(&snapshot);
     let mru = mru_store.load()?;
-    let zoxide_source = load_zoxide();
-    let mut warnings = zoxide_source.warning.into_iter().collect::<Vec<_>>();
+    let mut warnings = Vec::new();
     if workspace_source.skipped > 0 {
         warnings.push(format!(
             "{} open workspace(s) have no usable directory.",
@@ -60,10 +66,14 @@ fn run_picker_inner() -> Result<()> {
         ));
     }
 
-    let candidates = merge_candidates(workspace_source.workspaces, zoxide_source.entries, &mru)?;
+    let workspaces = workspace_source.workspaces;
+    let candidates = merge_candidates(workspaces.clone(), Vec::new(), &mru)?;
     let mut model = PickerModel::new(candidates, &warnings);
+    let outcome = ui::run(&mut model, |model| {
+        apply_zoxide_updates(model, &zoxide_updates, &workspaces, &mru)
+    })?;
 
-    if let PickerOutcome::Selected(index) = ui::run(&mut model)? {
+    if let PickerOutcome::Selected(index) = outcome {
         let candidate = model
             .candidate(index)
             .context("picker selected a candidate that no longer exists")?;
@@ -91,6 +101,41 @@ fn select_candidate(
     }
 
     mru_store.record(candidate.canonical_path.clone())
+}
+
+/// Runs on a thread so the picker opens before zoxide answers.
+fn load_zoxide_in_background() -> mpsc::Receiver<ZoxideSource> {
+    let (sender, receiver) = mpsc::channel();
+    let loader_sender = sender.clone();
+    let loader = thread::Builder::new().spawn(move || {
+        load_zoxide_directories(ZOXIDE_DIRECTORY_WAIT, |source| {
+            let _ = loader_sender.send(source);
+        });
+    });
+    if loader.is_err() {
+        let _ = sender.send(ZoxideSource {
+            entries: Vec::new(),
+            warning: Some("zoxide could not load. Showing open workspaces only.".to_string()),
+        });
+    }
+    receiver
+}
+
+fn apply_zoxide_updates(
+    model: &mut PickerModel,
+    updates: &mpsc::Receiver<ZoxideSource>,
+    workspaces: &[Workspace],
+    mru: &MruState,
+) -> Result<bool> {
+    let mut changed = false;
+    while let Ok(source) = updates.try_recv() {
+        if let Some(warning) = &source.warning {
+            model.push_warning(warning);
+        }
+        model.replace_candidates(merge_candidates(workspaces.to_vec(), source.entries, mru)?);
+        changed = true;
+    }
+    Ok(changed)
 }
 
 fn record_focused_workspace() -> Result<()> {

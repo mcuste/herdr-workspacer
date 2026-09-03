@@ -71,6 +71,10 @@ once as an active `[workspace]` row. Git metadata directories, missing zoxide di
 malformed records are skipped. Within each group, MRU paths come first. Remaining workspaces use
 Herdr's order and remaining zoxide directories use descending zoxide score.
 
+Open workspaces appear as soon as the popup opens. zoxide directories load in the background and
+join the list when their directory checks finish. The checks run in parallel, so one slow network
+path does not delay the others.
+
 Selecting another directory first checks a fresh Herdr snapshot, then focuses a workspace that has
 since opened there or creates a new focused workspace.
 
@@ -97,6 +101,8 @@ The picker remains useful when optional data is unavailable:
 - If zoxide is missing or its query fails, open workspaces remain available and the popup shows a
   warning.
 - Open workspaces without a usable directory are skipped and counted in the warning.
+- A zoxide directory on an unresponsive filesystem joins the list when its check completes. Other
+  directories are not delayed.
 - A missing or malformed MRU file starts with empty history. The malformed file is moved aside for
   inspection.
 - A failed Herdr operation is shown in the popup and returned as a process error.

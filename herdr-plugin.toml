@@ -12,7 +12,7 @@ command = ["/bin/sh", "scripts/fetch-or-build.sh"]
 id = "open"
 title = "Open workspace picker"
 contexts = ["global", "workspace"]
-command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-workspacer\" open"]
+command = ["bin/herdr-workspacer", "open"]
 
 [[panes]]
 id = "picker"
@@ -20,8 +20,8 @@ title = "Workspace"
 placement = "popup"
 width = "55%"
 height = "45%"
-command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-workspacer\" picker"]
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-workspacer\" picker"]
 
 [[events]]
 on = "workspace.focused"
-command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-workspacer\" record-focus"]
+command = ["bin/herdr-workspacer", "record-focus"]

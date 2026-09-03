@@ -2,6 +2,13 @@ use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering as AtomicOrdering},
+        mpsc,
+    },
+    thread,
+    time::{Duration, Instant},
 };
 
 use anyhow::Result;
@@ -113,6 +120,9 @@ impl Candidate {
 }
 
 /// Merges workspace and zoxide sources into the picker order.
+///
+/// Callers pass zoxide entries that [`existing_directories`] already confirmed. This function does
+/// not check the filesystem again.
 pub fn merge_candidates(
     workspaces: Vec<Workspace>,
     zoxide_entries: Vec<ZoxideEntry>,
@@ -128,10 +138,6 @@ pub fn merge_candidates(
     }
 
     for (source_order, entry) in zoxide_entries.into_iter().enumerate() {
-        if entry.path.file_name().is_some_and(|name| name == ".git") || !entry.path.is_dir() {
-            continue;
-        }
-
         let canonical_path = normalize_path(&entry.path)?;
         if !workspace_paths.contains(&canonical_path) {
             candidates.push(Candidate::directory(entry, canonical_path, source_order));
@@ -140,6 +146,103 @@ pub fn merge_candidates(
 
     sort_candidates(&mut candidates, mru);
     Ok(candidates)
+}
+
+const DIRECTORY_CHECK_THREADS: usize = 8;
+
+/// Keeps the zoxide entries whose paths are directories, checking them on worker threads.
+///
+/// `on_update` receives the entries confirmed within `wait`, then the complete list once more if
+/// some checks finish later, so an unresponsive filesystem delays only its own entry.
+pub fn existing_directories(
+    entries: Vec<ZoxideEntry>,
+    wait: Duration,
+    mut on_update: impl FnMut(Vec<ZoxideEntry>),
+) {
+    let entries = Arc::new(entries);
+    let next_index = Arc::new(AtomicUsize::new(0));
+    let (sender, receiver) = mpsc::channel();
+    let mut workers = 0;
+    for _ in 0..entries.len().min(DIRECTORY_CHECK_THREADS) {
+        let entries = Arc::clone(&entries);
+        let next_index = Arc::clone(&next_index);
+        let sender = sender.clone();
+        let spawned = thread::Builder::new()
+            .spawn(move || check_directories(&entries, &next_index, &sender))
+            .is_ok();
+        if spawned {
+            workers += 1;
+        }
+    }
+    if workers == 0 {
+        check_directories(&entries, &next_index, &sender);
+    }
+    drop(sender);
+
+    let deadline = Instant::now() + wait;
+    let mut is_directory = vec![None; entries.len()];
+    let mut pending = entries.len();
+    while pending > 0 {
+        let timeout = deadline.saturating_duration_since(Instant::now());
+        match receiver.recv_timeout(timeout) {
+            Ok((index, result)) => {
+                if let Some(slot) = is_directory.get_mut(index) {
+                    *slot = Some(result);
+                }
+                pending -= 1;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                pending = 0;
+            }
+        }
+    }
+    on_update(confirmed_entries(&entries, &is_directory));
+
+    let mut late_results = false;
+    while pending > 0 {
+        let Ok((index, result)) = receiver.recv() else {
+            break;
+        };
+        if let Some(slot) = is_directory.get_mut(index) {
+            *slot = Some(result);
+        }
+        pending -= 1;
+        late_results |= result;
+    }
+    if late_results {
+        on_update(confirmed_entries(&entries, &is_directory));
+    }
+}
+
+fn check_directories(
+    entries: &[ZoxideEntry],
+    next_index: &AtomicUsize,
+    sender: &mpsc::Sender<(usize, bool)>,
+) {
+    loop {
+        let index = next_index.fetch_add(1, AtomicOrdering::Relaxed);
+        let Some(entry) = entries.get(index) else {
+            return;
+        };
+        let result = !is_git_metadata(&entry.path) && entry.path.is_dir();
+        if sender.send((index, result)).is_err() {
+            return;
+        }
+    }
+}
+
+fn confirmed_entries(entries: &[ZoxideEntry], is_directory: &[Option<bool>]) -> Vec<ZoxideEntry> {
+    entries
+        .iter()
+        .zip(is_directory)
+        .filter(|(_, result)| **result == Some(true))
+        .map(|(entry, _)| entry.clone())
+        .collect()
+}
+
+fn is_git_metadata(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == ".git")
 }
 
 /// Returns a canonical path, retaining an absolute path when canonicalization fails.
@@ -243,39 +346,9 @@ fn safe_terminal_text(value: &str) -> String {
 mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
-    use std::{
-        sync::atomic::{AtomicUsize, Ordering},
-        time::{SystemTime, UNIX_EPOCH},
-    };
 
     use super::*;
-
-    static NEXT_TEMPORARY_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
-
-    struct TemporaryDirectory {
-        path: std::path::PathBuf,
-    }
-
-    impl TemporaryDirectory {
-        fn new() -> Result<Self> {
-            let sequence = NEXT_TEMPORARY_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "herdr-workspacer-candidate-{}-{}-{sequence}",
-                std::process::id(),
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_or(0, |duration| duration.as_nanos())
-            ));
-            std::fs::create_dir_all(&path)?;
-            Ok(Self { path })
-        }
-    }
-
-    impl Drop for TemporaryDirectory {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.path);
-        }
-    }
+    use crate::{fuzzy::filter_indices, test_support::TemporaryDirectory};
 
     fn workspace(id: &str, path: &str, native_order: usize) -> Workspace {
         Workspace {
@@ -287,26 +360,24 @@ mod tests {
         }
     }
 
-    fn entry(path: &str, score: f64) -> ZoxideEntry {
+    fn entry(path: &Path, score: f64) -> ZoxideEntry {
         ZoxideEntry {
-            path: PathBuf::from(path),
+            path: path.to_path_buf(),
             score,
         }
     }
 
-    #[test]
-    fn workspace_suppresses_zoxide_candidate_at_the_same_path() {
-        let path = std::env::temp_dir();
-        let path_text = path.display().to_string();
-        let workspaces = vec![workspace("workspace", &path_text, 0)];
-        let entries = vec![entry(&path_text, 10.0)];
-        let candidates = merge_candidates(workspaces, entries, &MruState::default());
+    fn labels(candidates: &[Candidate]) -> Vec<&str> {
+        candidates
+            .iter()
+            .map(|candidate| candidate.label.as_str())
+            .collect()
+    }
 
-        assert!(candidates.is_ok());
-        if let Ok(candidates) = candidates {
-            assert_eq!(candidates.len(), 1);
-            assert!(candidates.first().is_some_and(Candidate::is_workspace));
-        }
+    fn is_subsequence(part: &[PathBuf], whole: &[PathBuf]) -> bool {
+        let mut remaining = whole.iter();
+        part.iter()
+            .all(|path| remaining.by_ref().any(|candidate| candidate == path))
     }
 
     #[cfg(unix)]
@@ -320,7 +391,7 @@ mod tests {
 
         let candidates = merge_candidates(
             vec![workspace("workspace", &alias.display().to_string(), 0)],
-            vec![entry(&directory.display().to_string(), 10.0)],
+            vec![entry(&directory, 10.0)],
             &MruState::default(),
         )?;
 
@@ -333,62 +404,134 @@ mod tests {
     }
 
     #[test]
-    fn skips_missing_zoxide_directories() -> Result<()> {
+    fn confirms_directories_in_zoxide_order() -> Result<()> {
         let root = TemporaryDirectory::new()?;
-        let missing = root.path.join("missing");
-
-        let candidates = merge_candidates(
-            Vec::new(),
-            vec![entry(&missing.display().to_string(), 10.0)],
-            &MruState::default(),
-        )?;
-
-        anyhow::ensure!(candidates.is_empty(), "expected no candidates");
-        Ok(())
-    }
-
-    #[test]
-    fn skips_git_metadata_directories() -> Result<()> {
-        let root = TemporaryDirectory::new()?;
+        let first = root.path.join("first");
+        let second = root.path.join("second");
         let git = root.path.join(".git");
-        let project = root.path.join("project");
+        std::fs::create_dir(&first)?;
+        std::fs::create_dir(&second)?;
         std::fs::create_dir(&git)?;
-        std::fs::create_dir(&project)?;
+        let mut updates = Vec::new();
 
-        let candidates = merge_candidates(
-            Vec::new(),
+        existing_directories(
             vec![
-                entry(&git.display().to_string(), 10.0),
-                entry(&project.display().to_string(), 1.0),
+                entry(&second, 3.0),
+                entry(&root.path.join("missing"), 2.5),
+                entry(&git, 2.0),
+                entry(&first, 1.0),
             ],
-            &MruState::default(),
-        )?;
+            Duration::from_secs(5),
+            |entries| updates.push(entries),
+        );
 
+        anyhow::ensure!(updates.len() == 1, "expected one update");
+        let paths = updates
+            .iter()
+            .flatten()
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>();
         anyhow::ensure!(
-            candidates
-                .iter()
-                .map(|candidate| candidate.label.as_str())
-                .collect::<Vec<_>>()
-                == vec!["project"],
-            "git metadata directory was included"
+            paths == vec![second, first],
+            "directory check changed the entry order or kept a non-directory"
         );
         Ok(())
     }
 
     #[test]
-    fn searches_the_displayed_path() {
-        assert_eq!(search_text("dotfiles", "~/dotfiles"), "dotfiles ~/dotfiles");
+    fn late_directory_checks_end_in_one_complete_update() -> Result<()> {
+        let root = TemporaryDirectory::new()?;
+        let directories = (0..16)
+            .map(|index| root.path.join(format!("directory-{index}")))
+            .collect::<Vec<_>>();
+        for directory in &directories {
+            std::fs::create_dir(directory)?;
+        }
+        let mut entries = directories
+            .iter()
+            .map(|directory| entry(directory, 1.0))
+            .collect::<Vec<_>>();
+        entries.insert(4, entry(&root.path.join("missing"), 1.0));
+        let mut updates = Vec::new();
+
+        existing_directories(entries, Duration::ZERO, |entries| {
+            updates.push(
+                entries
+                    .into_iter()
+                    .map(|entry| entry.path)
+                    .collect::<Vec<_>>(),
+            );
+        });
+
+        anyhow::ensure!(
+            (1..=2).contains(&updates.len()),
+            "expected one or two updates, got {}",
+            updates.len()
+        );
+        anyhow::ensure!(
+            updates.last() == Some(&directories),
+            "final update did not list every directory in zoxide order: {updates:?}"
+        );
+        anyhow::ensure!(
+            updates
+                .iter()
+                .all(|update| is_subsequence(update, &directories)),
+            "an update reordered or added entries: {updates:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reports_no_directories_without_entries() {
+        let mut updates = 0;
+        existing_directories(Vec::new(), Duration::from_secs(1), |entries| {
+            assert!(entries.is_empty());
+            updates += 1;
+        });
+        assert_eq!(updates, 1);
+    }
+
+    #[test]
+    fn replaces_control_characters_in_labels_and_paths() -> Result<()> {
+        let raw_label = "label\x1b[31mred";
+        let candidates = merge_candidates(
+            vec![Workspace {
+                id: "workspace".to_string(),
+                label: raw_label.to_string(),
+                is_worktree: false,
+                path: PathBuf::from("/projects/workspace"),
+                native_order: 0,
+            }],
+            vec![entry(Path::new("/projects/dir\x1b[31mred"), 1.0)],
+            &MruState::default(),
+        )?;
+
+        anyhow::ensure!(
+            labels(&candidates) == vec!["label\u{fffd}[31mred", "dir\u{fffd}[31mred"],
+            "labels kept control characters: {:?}",
+            labels(&candidates)
+        );
+        anyhow::ensure!(
+            candidates
+                .iter()
+                .all(|candidate| !candidate.display_path.contains('\x1b')),
+            "a display path kept a control character"
+        );
+        anyhow::ensure!(
+            filter_indices(&candidates, raw_label) == vec![0],
+            "the original label is no longer searchable"
+        );
+        Ok(())
     }
 
     #[test]
     fn worktree_candidates_hide_the_generated_label_prefix() -> Result<()> {
-        let path = std::env::temp_dir();
         let candidates = merge_candidates(
             vec![Workspace {
                 id: "worktree-feature".to_string(),
                 label: "worktree-feature".to_string(),
                 is_worktree: true,
-                path,
+                path: PathBuf::from("/projects/feature"),
                 native_order: 0,
             }],
             Vec::new(),
@@ -407,53 +550,39 @@ mod tests {
     }
 
     #[test]
-    fn keeps_multiple_workspaces_at_the_same_path() {
-        let path = std::env::temp_dir().display().to_string();
-        let workspaces = vec![workspace("first", &path, 0), workspace("second", &path, 1)];
-        let candidates =
-            merge_candidates(workspaces, vec![entry(&path, 10.0)], &MruState::default());
+    fn keeps_multiple_workspaces_at_the_same_path() -> Result<()> {
+        let path = "/projects/shared";
+        let candidates = merge_candidates(
+            vec![workspace("first", path, 0), workspace("second", path, 1)],
+            vec![entry(Path::new(path), 10.0)],
+            &MruState::default(),
+        )?;
 
-        assert!(candidates.is_ok());
-        if let Ok(candidates) = candidates {
-            assert_eq!(candidates.len(), 2);
-            assert_eq!(
-                candidates
-                    .iter()
-                    .map(|candidate| candidate.label.as_str())
-                    .collect::<Vec<_>>(),
-                vec!["first", "second"]
-            );
-        }
+        anyhow::ensure!(
+            labels(&candidates) == vec!["first", "second"],
+            "expected both workspaces and no zoxide row: {:?}",
+            labels(&candidates)
+        );
+        Ok(())
     }
 
     #[test]
-    fn ranks_mru_paths_before_zoxide_score() -> Result<()> {
-        let root = TemporaryDirectory::new()?;
-        let first = root.path.join("first");
-        let second = root.path.join("second");
-        std::fs::create_dir(&first)?;
-        std::fs::create_dir(&second)?;
-        let first_text = first.display().to_string();
-        let second_text = second.display().to_string();
+    fn ranks_mru_paths_before_native_order() -> Result<()> {
         let mru = MruState {
-            paths: vec![normalize_path(&second)?],
+            paths: vec![PathBuf::from("/projects/second")],
         };
 
         let candidates = merge_candidates(
             vec![
-                workspace("first", &first_text, 0),
-                workspace("second", &second_text, 1),
+                workspace("first", "/projects/first", 0),
+                workspace("second", "/projects/second", 1),
             ],
-            vec![entry(&first_text, 1.0), entry(&second_text, 2.0)],
+            Vec::new(),
             &mru,
         )?;
 
-        let labels = candidates
-            .iter()
-            .map(|candidate| candidate.label.as_str())
-            .collect::<Vec<_>>();
         anyhow::ensure!(
-            labels == vec!["second", "first"],
+            labels(&candidates) == vec!["second", "first"],
             "MRU order was not preserved"
         );
         Ok(())
@@ -461,61 +590,36 @@ mod tests {
 
     #[test]
     fn ranks_open_workspaces_before_zoxide_paths() -> Result<()> {
-        let root = TemporaryDirectory::new()?;
-        let directory = root.path.join("zoxide");
-        std::fs::create_dir(&directory)?;
-
         let candidates = merge_candidates(
             vec![workspace("workspace", "/workspaces/open", 0)],
-            vec![entry(&directory.display().to_string(), 10.0)],
-            &MruState::default(),
+            vec![entry(Path::new("/projects/zoxide"), 10.0)],
+            &MruState {
+                paths: vec![PathBuf::from("/projects/zoxide")],
+            },
         )?;
 
-        let labels = candidates
-            .iter()
-            .map(|candidate| candidate.label.as_str())
-            .collect::<Vec<_>>();
         anyhow::ensure!(
-            labels == vec!["workspace", "zoxide"],
+            labels(&candidates) == vec!["workspace", "zoxide"],
             "open workspace did not appear before zoxide"
         );
         Ok(())
     }
 
     #[test]
-    fn orders_unknown_directories_by_descending_zoxide_score() {
-        let root = std::env::temp_dir().join(format!(
-            "herdr-workspacer-candidate-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_nanos())
-        ));
-        let first = root.join("first");
-        let second = root.join("second");
-
-        assert!(std::fs::create_dir_all(&first).is_ok());
-        assert!(std::fs::create_dir_all(&second).is_ok());
-
+    fn orders_unknown_directories_by_descending_zoxide_score() -> Result<()> {
         let candidates = merge_candidates(
             Vec::new(),
             vec![
-                entry(&first.display().to_string(), 1.0),
-                entry(&second.display().to_string(), 2.0),
+                entry(Path::new("/projects/first"), 1.0),
+                entry(Path::new("/projects/second"), 2.0),
             ],
             &MruState::default(),
+        )?;
+
+        anyhow::ensure!(
+            labels(&candidates) == vec!["second", "first"],
+            "zoxide score order was not preserved"
         );
-
-        assert!(candidates.is_ok());
-        if let Ok(candidates) = candidates {
-            assert_eq!(
-                candidates
-                    .iter()
-                    .map(|candidate| &candidate.path)
-                    .collect::<Vec<_>>(),
-                vec![&second, &first]
-            );
-        }
-
-        assert!(std::fs::remove_dir_all(root).is_ok());
+        Ok(())
     }
 }

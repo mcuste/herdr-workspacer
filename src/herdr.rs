@@ -372,6 +372,75 @@ mod tests {
         }
     }
 
+    #[test]
+    fn falls_back_to_any_pane_shell_directory_before_foreground_directories() {
+        let snapshot = snapshot(
+            r#"
+            {
+              "result": {
+                "snapshot": {
+                  "workspaces": [{
+                    "workspace_id": "w1",
+                    "label": "project",
+                    "active_tab_id": "w1:t1"
+                  }],
+                  "panes": [
+                    { "workspace_id": "w1", "tab_id": "w1:t1", "cwd": null, "foreground_cwd": "/active-process" },
+                    { "workspace_id": "w2", "tab_id": "w2:t1", "cwd": "/other-workspace", "foreground_cwd": null },
+                    { "workspace_id": "w1", "tab_id": "w1:t2", "cwd": "/other-tab", "foreground_cwd": null }
+                  ]
+                }
+              }
+            }
+        "#,
+        );
+
+        assert!(snapshot.is_some());
+        if let Some(snapshot) = snapshot {
+            assert_eq!(
+                workspace_source(&snapshot)
+                    .workspaces
+                    .first()
+                    .map(|workspace| &workspace.path),
+                Some(&PathBuf::from("/other-tab"))
+            );
+        }
+    }
+
+    #[test]
+    fn falls_back_to_the_active_tab_foreground_directory() {
+        let snapshot = snapshot(
+            r#"
+            {
+              "result": {
+                "snapshot": {
+                  "workspaces": [{
+                    "workspace_id": "w1",
+                    "label": "project",
+                    "active_tab_id": "w1:t1"
+                  }],
+                  "panes": [
+                    { "workspace_id": "w1", "tab_id": "w1:t2", "cwd": null, "foreground_cwd": "/other-tab" },
+                    { "workspace_id": "w1", "tab_id": "w1:t1", "cwd": null, "foreground_cwd": "/active-process" }
+                  ]
+                }
+              }
+            }
+        "#,
+        );
+
+        assert!(snapshot.is_some());
+        if let Some(snapshot) = snapshot {
+            assert_eq!(
+                workspace_source(&snapshot)
+                    .workspaces
+                    .first()
+                    .map(|workspace| &workspace.path),
+                Some(&PathBuf::from("/active-process"))
+            );
+        }
+    }
+
     fn snapshot(value: &str) -> Option<Snapshot> {
         serde_json::from_str::<ApiResponse>(value)
             .ok()
