@@ -19,6 +19,7 @@
 | `scripts/fetch-or-build.sh` | Verified release download with a Cargo source-build fallback |
 | `scripts/check-version.py` | Cargo, plugin manifest, and release-tag version agreement |
 | `scripts/release.py` | Release metadata, verification, commit, tag, and optional push |
+| `scripts/release-notes.py` | Changelog section extraction for GitHub release notes |
 | `.github/workflows/ci.yml` | Pull request and `main` verification gate |
 | `.github/workflows/release.yml` | Tagged multi-platform, GitHub, and crates.io publishing |
 
@@ -149,8 +150,9 @@ A tag named `v<version>` starts `.github/workflows/release.yml`. The workflow ch
 - macOS ARM64
 
 Linux assets use `cross`; macOS assets use Cargo on the matching runner. The GitHub publish job
-creates `SHA256SUMS` and attaches all assets to a release. The final job publishes the same version
-to crates.io unless that version already exists.
+creates `SHA256SUMS`, attaches all assets, and uses the matching `CHANGELOG.md` section as the
+release body. The final job publishes the same version to crates.io unless that version already
+exists.
 
 Prepare a release from a clean `main`:
 

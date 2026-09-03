@@ -67,19 +67,21 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
       - working-directory: dist
         run: shasum -a 256 herdr-workspacer-* > SHA256SUMS
+      - run: python3 scripts/release-notes.py "${GITHUB_REF_NAME}" > release-notes.md
       - env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         run: >-
           gh release create "${GITHUB_REF_NAME}"
           --title "${GITHUB_REF_NAME}"
-          --generate-notes
+          --notes-file release-notes.md
           dist/herdr-workspacer-*
           dist/SHA256SUMS
 
