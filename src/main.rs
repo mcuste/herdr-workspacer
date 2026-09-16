@@ -2,6 +2,9 @@
 
 mod app;
 mod herdr;
+#[cfg(test)]
+#[path = "test_support.rs"]
+mod test_support;
 mod ui;
 
 use std::{sync::mpsc, thread, time::Duration};
@@ -113,10 +116,9 @@ fn load_zoxide_in_background() -> mpsc::Receiver<ZoxideSource> {
         });
     });
     if loader.is_err() {
-        let _ = sender.send(ZoxideSource {
-            entries: Vec::new(),
-            warning: Some("zoxide could not load. Showing open workspaces only.".to_string()),
-        });
+        let _ = sender.send(ZoxideSource::unavailable(
+            "zoxide could not load. Showing open workspaces only.",
+        ));
     }
     receiver
 }
@@ -157,44 +159,12 @@ fn record_focused_workspace() -> Result<()> {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use std::{
-        fs,
-        os::unix::fs::PermissionsExt,
-        path::PathBuf,
-        sync::atomic::{AtomicUsize, Ordering},
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::{fs, os::unix::fs::PermissionsExt};
 
     use herdr_workspacer::{MruState, ZoxideEntry};
 
     use super::*;
-
-    static NEXT_TEMPORARY_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
-
-    struct TemporaryDirectory {
-        path: PathBuf,
-    }
-
-    impl TemporaryDirectory {
-        fn new() -> Result<Self> {
-            let sequence = NEXT_TEMPORARY_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-            let timestamp = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_nanos());
-            let path = std::env::temp_dir().join(format!(
-                "herdr-workspacer-main-{}-{timestamp}-{sequence}",
-                std::process::id()
-            ));
-            fs::create_dir(&path)?;
-            Ok(Self { path })
-        }
-    }
-
-    impl Drop for TemporaryDirectory {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
+    use crate::test_support::TemporaryDirectory;
 
     #[test]
     fn selecting_directory_focuses_workspace_that_appeared_since_picker_opened() -> Result<()> {

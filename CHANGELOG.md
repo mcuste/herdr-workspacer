@@ -6,6 +6,11 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Added
+
+- `safe_terminal_text` replaces control characters in text that comes from outside the program.
+- `ZoxideSource::unavailable` builds an empty source with a warning.
+
 ## [0.3.0] - 2026-09-03
 
 ### Changed

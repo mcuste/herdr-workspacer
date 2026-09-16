@@ -97,16 +97,10 @@ impl PickerModel {
             return;
         }
 
-        let length = self.visible.len();
-        self.selected = if amount.is_negative() {
-            self.selected
-                .saturating_sub(amount.unsigned_abs())
-                .min(length - 1)
-        } else {
-            self.selected
-                .saturating_add(amount.unsigned_abs())
-                .min(length - 1)
-        };
+        self.selected = self
+            .selected
+            .saturating_add_signed(amount)
+            .min(self.visible.len() - 1);
     }
 
     fn refresh_visible(&mut self) {

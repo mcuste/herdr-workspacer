@@ -6,7 +6,7 @@ use rustix::termios::{
 };
 
 use crate::app::PickerModel;
-use herdr_workspacer::Candidate;
+use herdr_workspacer::{Candidate, safe_terminal_text};
 
 const DEFAULT_VISIBLE_ROWS: usize = 10;
 const LAYOUT_ROWS: usize = 6;
@@ -26,27 +26,22 @@ pub(crate) fn run(
     model: &mut PickerModel,
     apply_updates: impl FnMut(&mut PickerModel) -> Result<bool>,
 ) -> Result<PickerOutcome> {
-    let mut terminal = TerminalSession::enter()?;
-    let result = terminal.run(model, apply_updates);
-    let restore_result = terminal.restore();
-
-    match result {
-        Ok(outcome) => {
-            restore_result?;
-            Ok(outcome)
-        }
-        Err(error) => Err(error),
-    }
+    with_terminal(|terminal| terminal.run(model, apply_updates))
 }
 
 pub(crate) fn show_error(message: &str) -> Result<()> {
+    with_terminal(|terminal| terminal.run_error(message))
+}
+
+/// Restores the terminal after `action`, reporting an action failure before a restore failure.
+fn with_terminal<T>(action: impl FnOnce(&mut TerminalSession) -> Result<T>) -> Result<T> {
     let mut terminal = TerminalSession::enter()?;
-    let result = terminal.run_error(message);
+    let result = action(&mut terminal);
     let restore_result = terminal.restore();
 
-    result?;
+    let value = result?;
     restore_result?;
-    Ok(())
+    Ok(value)
 }
 
 struct TerminalSession {
@@ -183,12 +178,13 @@ fn render_picker(stdout: &mut io::Stdout, model: &PickerModel, visible_rows: usi
     } else if let Some(rows) = visible.get(start..end) {
         for (offset, index) in rows.iter().enumerate() {
             if let Some(candidate) = model.candidate(*index) {
+                let is_selected = model.selected() == start.saturating_add(offset);
                 write!(stdout, "{CONTENT_INDENT}")?;
-                if model.selected() == start.saturating_add(offset) {
+                if is_selected {
                     write!(stdout, "\x1b[7m")?;
                 }
                 write_candidate(stdout, candidate)?;
-                if model.selected() == start.saturating_add(offset) {
+                if is_selected {
                     write!(stdout, "\x1b[0m")?;
                 }
                 write!(stdout, "\r\n")?;
@@ -329,21 +325,11 @@ fn read_optional_byte(input: &mut impl Read) -> io::Result<Option<u8>> {
     }
 }
 
-fn safe_terminal_text(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if character.is_control() {
-                '�'
-            } else {
-                character
-            }
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
+    use super::*;
 
     #[test]
     fn renders_worktrees_with_a_yellow_tag() -> anyhow::Result<()> {
@@ -375,9 +361,6 @@ mod tests {
         );
         Ok(())
     }
-    use std::io::Cursor;
-
-    use super::*;
 
     #[test]
     fn parses_documented_controls() -> anyhow::Result<()> {

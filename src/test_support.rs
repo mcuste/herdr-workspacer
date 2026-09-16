@@ -1,10 +1,13 @@
+//! Shared by the library, the binary and the integration tests through `#[path]` includes,
+//! because those targets cannot reach the library's `cfg(test)` modules.
+
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
@@ -22,7 +25,8 @@ impl TemporaryDirectory {
             "herdr-workspacer-{}-{timestamp}-{sequence}",
             std::process::id()
         ));
-        std::fs::create_dir(&path)?;
+        std::fs::create_dir(&path)
+            .with_context(|| format!("could not create temporary directory {}", path.display()))?;
         Ok(Self { path })
     }
 }

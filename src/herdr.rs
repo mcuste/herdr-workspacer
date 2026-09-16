@@ -1,7 +1,7 @@
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Command, Output, Stdio},
 };
 
 use anyhow::{Context, Result};
@@ -81,11 +81,7 @@ impl HerdrClient {
     }
 
     pub(crate) fn snapshot(&self) -> Result<Snapshot> {
-        let output = self.command(["api", "snapshot"]).output()?;
-        if !output.status.success() {
-            return Err(command_error("herdr api snapshot", &output));
-        }
-
+        let output = checked_output("herdr api snapshot", self.command(["api", "snapshot"]))?;
         let response = serde_json::from_slice::<ApiResponse>(&output.stdout)
             .context("Herdr returned an invalid session snapshot")?;
         Ok(response.result.snapshot)
@@ -111,25 +107,15 @@ impl HerdrClient {
     }
 
     pub(crate) fn create_workspace(&self, path: &Path) -> Result<()> {
-        let output = self
-            .command(["workspace", "create", "--cwd"])
-            .arg(path)
-            .arg("--focus")
-            .output()?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(command_error("create workspace", &output))
-        }
+        let mut command = self.command(["workspace", "create", "--cwd"]);
+        command.arg(path).arg("--focus");
+        checked_output("create workspace", command)?;
+        Ok(())
     }
 
     fn run<const N: usize>(&self, action: &str, arguments: [&str; N]) -> Result<()> {
-        let output = self.command(arguments).output()?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(command_error(action, &output))
-        }
+        checked_output(action, self.command(arguments))?;
+        Ok(())
     }
 
     fn command<const N: usize>(&self, arguments: [&str; N]) -> Command {
@@ -184,47 +170,36 @@ pub(crate) fn focused_workspace_id_from_environment() -> Result<String> {
 }
 
 fn workspace_path(snapshot: &Snapshot, workspace: &ApiWorkspace) -> Option<PathBuf> {
+    let workspace_panes = || {
+        snapshot
+            .panes
+            .iter()
+            .filter(|pane| pane.workspace_id == workspace.workspace_id)
+    };
+    let active_tab_panes =
+        || workspace_panes().filter(|pane| pane.tab_id == workspace.active_tab_id);
+
     workspace
         .worktree
         .as_ref()
         .map(|worktree| worktree.checkout_path.clone())
-        .or_else(|| {
-            snapshot
-                .panes
-                .iter()
-                .filter(|pane| {
-                    pane.workspace_id == workspace.workspace_id
-                        && pane.tab_id == workspace.active_tab_id
-                })
-                .find_map(|pane| pane.cwd.clone())
-        })
-        .or_else(|| {
-            snapshot
-                .panes
-                .iter()
-                .filter(|pane| pane.workspace_id == workspace.workspace_id)
-                .find_map(|pane| pane.cwd.clone())
-        })
-        .or_else(|| {
-            snapshot
-                .panes
-                .iter()
-                .filter(|pane| {
-                    pane.workspace_id == workspace.workspace_id
-                        && pane.tab_id == workspace.active_tab_id
-                })
-                .find_map(|pane| pane.foreground_cwd.clone())
-        })
-        .or_else(|| {
-            snapshot
-                .panes
-                .iter()
-                .filter(|pane| pane.workspace_id == workspace.workspace_id)
-                .find_map(|pane| pane.foreground_cwd.clone())
-        })
+        .or_else(|| active_tab_panes().find_map(|pane| pane.cwd.clone()))
+        .or_else(|| workspace_panes().find_map(|pane| pane.cwd.clone()))
+        .or_else(|| active_tab_panes().find_map(|pane| pane.foreground_cwd.clone()))
+        .or_else(|| workspace_panes().find_map(|pane| pane.foreground_cwd.clone()))
 }
 
-fn command_error(action: &str, output: &std::process::Output) -> anyhow::Error {
+/// `action` names the operation in the error when the command exits non-zero.
+fn checked_output(action: &str, mut command: Command) -> Result<Output> {
+    let output = command.output()?;
+    if output.status.success() {
+        Ok(output)
+    } else {
+        Err(command_error(action, &output))
+    }
+}
+
+fn command_error(action: &str, output: &Output) -> anyhow::Error {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let details = stderr.trim();
     if details.is_empty() {
@@ -236,12 +211,26 @@ fn command_error(action: &str, output: &std::process::Output) -> anyhow::Error {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
 
+    fn snapshot(value: &str) -> Result<Snapshot> {
+        Ok(serde_json::from_str::<ApiResponse>(value)
+            .context("test snapshot is not valid JSON")?
+            .result
+            .snapshot)
+    }
+
+    fn first_workspace(value: &str) -> Result<Workspace> {
+        workspace_source(&snapshot(value)?)
+            .workspaces
+            .into_iter()
+            .next()
+            .context("snapshot produced no workspace")
+    }
+
     #[test]
-    fn prefers_worktree_checkout_over_pane_paths() {
-        let snapshot = snapshot(
+    fn prefers_worktree_checkout_over_pane_paths() -> Result<()> {
+        let workspace = first_workspace(
             r#"
             {
               "result": {
@@ -262,23 +251,19 @@ mod tests {
               }
             }
         "#,
-        );
+        )?;
 
-        assert!(snapshot.is_some());
-        if let Some(snapshot) = snapshot {
-            assert_eq!(
-                workspace_source(&snapshot)
-                    .workspaces
-                    .first()
-                    .map(|workspace| &workspace.path),
-                Some(&PathBuf::from("/worktree"))
-            );
-        }
+        anyhow::ensure!(
+            workspace.path.as_path() == Path::new("/worktree"),
+            "pane paths won over the worktree checkout: {:?}",
+            workspace.path
+        );
+        Ok(())
     }
 
     #[test]
-    fn treats_primary_git_workspaces_as_regular_workspaces() {
-        let snapshot = snapshot(
+    fn treats_primary_git_workspaces_as_regular_workspaces() -> Result<()> {
+        let workspace = first_workspace(
             r#"
             {
               "result": {
@@ -297,23 +282,18 @@ mod tests {
               }
             }
         "#,
-        );
+        )?;
 
-        assert!(snapshot.is_some());
-        if let Some(snapshot) = snapshot {
-            assert_eq!(
-                workspace_source(&snapshot)
-                    .workspaces
-                    .first()
-                    .map(|workspace| workspace.is_worktree),
-                Some(false)
-            );
-        }
+        anyhow::ensure!(
+            !workspace.is_worktree,
+            "a primary checkout was marked as a worktree"
+        );
+        Ok(())
     }
 
     #[test]
-    fn uses_active_tab_shell_directory_without_a_worktree() {
-        let snapshot = snapshot(
+    fn uses_active_tab_shell_directory_without_a_worktree() -> Result<()> {
+        let workspace = first_workspace(
             r#"
             {
               "result": {
@@ -331,23 +311,19 @@ mod tests {
               }
             }
         "#,
-        );
+        )?;
 
-        assert!(snapshot.is_some());
-        if let Some(snapshot) = snapshot {
-            assert_eq!(
-                workspace_source(&snapshot)
-                    .workspaces
-                    .first()
-                    .map(|workspace| &workspace.path),
-                Some(&PathBuf::from("/active"))
-            );
-        }
+        anyhow::ensure!(
+            workspace.path.as_path() == Path::new("/active"),
+            "another tab won over the active tab: {:?}",
+            workspace.path
+        );
+        Ok(())
     }
 
     #[test]
-    fn skips_workspaces_without_a_directory() {
-        let snapshot = snapshot(
+    fn skips_workspaces_without_a_directory() -> Result<()> {
+        let source = workspace_source(&snapshot(
             r#"
             {
               "result": {
@@ -362,19 +338,18 @@ mod tests {
               }
             }
         "#,
-        );
+        )?);
 
-        assert!(snapshot.is_some());
-        if let Some(snapshot) = snapshot {
-            let source = workspace_source(&snapshot);
-            assert!(source.workspaces.is_empty());
-            assert_eq!(source.skipped, 1);
-        }
+        anyhow::ensure!(
+            source.workspaces.is_empty() && source.skipped == 1,
+            "a workspace without a directory was not skipped"
+        );
+        Ok(())
     }
 
     #[test]
-    fn falls_back_to_any_pane_shell_directory_before_foreground_directories() {
-        let snapshot = snapshot(
+    fn falls_back_to_any_pane_shell_directory_before_foreground_directories() -> Result<()> {
+        let workspace = first_workspace(
             r#"
             {
               "result": {
@@ -393,23 +368,19 @@ mod tests {
               }
             }
         "#,
-        );
+        )?;
 
-        assert!(snapshot.is_some());
-        if let Some(snapshot) = snapshot {
-            assert_eq!(
-                workspace_source(&snapshot)
-                    .workspaces
-                    .first()
-                    .map(|workspace| &workspace.path),
-                Some(&PathBuf::from("/other-tab"))
-            );
-        }
+        anyhow::ensure!(
+            workspace.path.as_path() == Path::new("/other-tab"),
+            "a foreground directory won over another tab shell directory: {:?}",
+            workspace.path
+        );
+        Ok(())
     }
 
     #[test]
-    fn falls_back_to_the_active_tab_foreground_directory() {
-        let snapshot = snapshot(
+    fn falls_back_to_the_active_tab_foreground_directory() -> Result<()> {
+        let workspace = first_workspace(
             r#"
             {
               "result": {
@@ -427,23 +398,13 @@ mod tests {
               }
             }
         "#,
+        )?;
+
+        anyhow::ensure!(
+            workspace.path.as_path() == Path::new("/active-process"),
+            "another tab won over the active tab foreground directory: {:?}",
+            workspace.path
         );
-
-        assert!(snapshot.is_some());
-        if let Some(snapshot) = snapshot {
-            assert_eq!(
-                workspace_source(&snapshot)
-                    .workspaces
-                    .first()
-                    .map(|workspace| &workspace.path),
-                Some(&PathBuf::from("/active-process"))
-            );
-        }
-    }
-
-    fn snapshot(value: &str) -> Option<Snapshot> {
-        serde_json::from_str::<ApiResponse>(value)
-            .ok()
-            .map(|response| response.result.snapshot)
+        Ok(())
     }
 }

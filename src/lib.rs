@@ -5,6 +5,7 @@ mod fuzzy;
 mod mru;
 #[cfg(test)]
 mod test_support;
+mod text;
 mod zoxide;
 
 /// Workspace and directory candidates plus merge and path operations.
@@ -15,6 +16,8 @@ pub use candidate::{
 pub use fuzzy::filter_indices;
 /// Persistent most-recently-used workspace state.
 pub use mru::{MruState, MruStore};
+/// Terminal-safe rendering of text from external sources.
+pub use text::safe_terminal_text;
 /// zoxide candidate loading and parsed records.
 pub use zoxide::{
     ZoxideEntry, ZoxideSource, load as load_zoxide, load_directories as load_zoxide_directories,

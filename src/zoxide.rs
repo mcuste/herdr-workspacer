@@ -26,6 +26,16 @@ pub struct ZoxideSource {
     pub warning: Option<String>,
 }
 
+impl ZoxideSource {
+    /// Builds an empty source that explains why no zoxide records are available.
+    pub fn unavailable(warning: &str) -> Self {
+        Self {
+            entries: Vec::new(),
+            warning: Some(warning.to_string()),
+        }
+    }
+}
+
 const SYSTEM_ZOXIDE_BINARIES: &[&str] = &[
     "/opt/homebrew/bin/zoxide",
     "/usr/local/bin/zoxide",
@@ -124,27 +134,20 @@ fn load_from_paths(paths: impl IntoIterator<Item = PathBuf>) -> ZoxideSource {
                 };
             }
             Ok(_) => {
-                return ZoxideSource {
-                    entries: Vec::new(),
-                    warning: Some("zoxide query failed. Showing open workspaces only.".to_string()),
-                };
+                return ZoxideSource::unavailable(
+                    "zoxide query failed. Showing open workspaces only.",
+                );
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(_) => {
-                return ZoxideSource {
-                    entries: Vec::new(),
-                    warning: Some(
-                        "zoxide could not run. Showing open workspaces only.".to_string(),
-                    ),
-                };
+                return ZoxideSource::unavailable(
+                    "zoxide could not run. Showing open workspaces only.",
+                );
             }
         }
     }
 
-    ZoxideSource {
-        entries: Vec::new(),
-        warning: Some("zoxide not found. Showing open workspaces only.".to_string()),
-    }
+    ZoxideSource::unavailable("zoxide not found. Showing open workspaces only.")
 }
 
 fn parse_line(line: &str) -> Option<ZoxideEntry> {

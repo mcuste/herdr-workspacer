@@ -2,19 +2,15 @@
 #![cfg(unix)]
 
 use std::{
-    env,
     fmt::Write as _,
     fs::{self, File},
     io::{self, Read, Write},
     os::unix::fs::{PermissionsExt, symlink},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
-    sync::{
-        LazyLock, Mutex, MutexGuard,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{LazyLock, Mutex, MutexGuard},
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
@@ -31,11 +27,15 @@ use serde_json::{Value, json};
 
 use StepAction::{Do, Key};
 
+#[path = "../src/test_support.rs"]
+mod test_support;
+
+use test_support::TemporaryDirectory;
+
 const PICKER_TIMEOUT: Duration = Duration::from_secs(10);
 const CLEAR_SCREEN: &str = "\x1b[2J\x1b[H";
 
 static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
 const HERDR_SCRIPT: &str = r#"#!/bin/sh
 base=${0%/*}
@@ -112,43 +112,16 @@ query:-ls)
 esac
 "#;
 
-struct TestDirectory {
-    path: PathBuf,
-}
-
-impl TestDirectory {
-    fn new() -> Result<Self> {
-        let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos());
-        let path = env::temp_dir().join(format!(
-            "herdr-workspacer-cli-{}-{timestamp}-{sequence}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir(&path)
-            .with_context(|| format!("could not create test directory {}", path.display()))?;
-        Ok(Self { path })
-    }
-}
-
-impl Drop for TestDirectory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
-
 /// The fixture directory is `HOME`, so displayed paths are `~/bin/...` on every machine. An empty
 /// zoxide fake is installed by default so no test reaches the real zoxide.
 struct Fixture {
-    directory: TestDirectory,
+    directory: TemporaryDirectory,
 }
 
 impl Fixture {
     fn new() -> Result<Self> {
         let fixture = Self {
-            directory: TestDirectory::new()?,
+            directory: TemporaryDirectory::new()?,
         };
         fs::create_dir(fixture.bin_dir())?;
         write_executable(&fixture.bin_dir(), "herdr", HERDR_SCRIPT)?;

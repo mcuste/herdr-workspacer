@@ -13,7 +13,7 @@ use std::{
 
 use anyhow::Result;
 
-use crate::{mru::MruState, zoxide::ZoxideEntry};
+use crate::{mru::MruState, text::safe_terminal_text, zoxide::ZoxideEntry};
 
 /// The target selected from the workspace picker.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -92,7 +92,7 @@ impl Candidate {
                 || display_path.clone(),
                 |name| name.to_string_lossy().into_owned(),
             );
-        let search_text = search_text(&raw_label, &display_path);
+        let search_text = format!("{raw_label} {display_path}");
         let label = safe_terminal_text(&raw_label);
 
         Self {
@@ -186,15 +186,11 @@ pub fn existing_directories(
         let timeout = deadline.saturating_duration_since(Instant::now());
         match receiver.recv_timeout(timeout) {
             Ok((index, result)) => {
-                if let Some(slot) = is_directory.get_mut(index) {
-                    *slot = Some(result);
-                }
+                record_check(&mut is_directory, index, result);
                 pending -= 1;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => break,
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                pending = 0;
-            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => pending = 0,
         }
     }
     on_update(confirmed_entries(&entries, &is_directory));
@@ -204,9 +200,7 @@ pub fn existing_directories(
         let Ok((index, result)) = receiver.recv() else {
             break;
         };
-        if let Some(slot) = is_directory.get_mut(index) {
-            *slot = Some(result);
-        }
+        record_check(&mut is_directory, index, result);
         pending -= 1;
         late_results |= result;
     }
@@ -229,6 +223,12 @@ fn check_directories(
         if sender.send((index, result)).is_err() {
             return;
         }
+    }
+}
+
+fn record_check(is_directory: &mut [Option<bool>], index: usize, result: bool) {
+    if let Some(slot) = is_directory.get_mut(index) {
+        *slot = Some(result);
     }
 }
 
@@ -323,23 +323,6 @@ fn display_path(path: &Path) -> String {
     };
 
     safe_terminal_text(&display)
-}
-
-fn search_text(label: &str, display_path: &str) -> String {
-    format!("{label} {display_path}")
-}
-
-fn safe_terminal_text(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if character.is_control() {
-                '�'
-            } else {
-                character
-            }
-        })
-        .collect()
 }
 
 #[cfg(test)]
